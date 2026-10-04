@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saha Konsolu</title>
+<style>
+  :root {
+    --bg: #121416; --panel: #181b1e; --panel-2: #1e2226; --line: #2b3035; --line-2: #3a4046;
+    --ink: #d9dcdf; --ink-2: #9aa1a8; --ink-3: #6c737a;
+    --accent: #e0a33a; --accent-ink: #1a1306; --alarm: #e5534b; --ok: #57ab5a; --warn: #c69026;
+    --map-bg: #101214; --grid: #1b1f22; --grid-major: #252a2e; --fov: rgba(140, 160, 180, .07); --fov-edge: #4b5560;
+    --mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #e9eaeb; --panel: #f6f6f5; --panel-2: #eeefee; --line: #d0d3d6; --line-2: #b9bdc1;
+      --ink: #1d2124; --ink-2: #4f565c; --ink-3: #7b8288;
+      --accent: #a8650b; --accent-ink: #fff; --map-bg: #f3f3f1; --grid: #e6e7e5; --grid-major: #d6d8d6;
+      --fov: rgba(60, 80, 100, .07); --fov-edge: #8a959f;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #e9eaeb; --panel: #f6f6f5; --panel-2: #eeefee; --line: #d0d3d6; --line-2: #b9bdc1;
+    --ink: #1d2124; --ink-2: #4f565c; --ink-3: #7b8288;
+    --accent: #a8650b; --accent-ink: #fff; --map-bg: #f3f3f1; --grid: #e6e7e5; --grid-major: #d6d8d6;
+    --fov: rgba(60, 80, 100, .07); --fov-edge: #8a959f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 13px/1.35 var(--sans); }
+  .num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .app { display: grid; height: 100vh; grid-template-columns: minmax(0, 1fr) 392px; grid-template-rows: 34px minmax(0, 1fr) 190px; }
+  /* status strip */
+  .strip { grid-column: 1 / -1; display: flex; align-items: stretch; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .strip > div { display: flex; align-items: center; gap: 6px; padding: 0 14px; border-right: 1px solid var(--line); white-space: nowrap; }
+  .strip .site { font-weight: 600; letter-spacing: .02em; }
+  .strip .k { color: var(--ink-3); text-transform: uppercase; font-size: 11px; letter-spacing: .06em; }
+  .strip .spacer { flex: 1; border-right: 0; }
+  .led { width: 7px; height: 7px; background: var(--ink-3); display: inline-block; }
+  .led.ok { background: var(--ok); } .led.bad { background: var(--alarm); } .led.warn { background: var(--warn); }
+  /* map */
+  .mapwrap { position: relative; min-height: 0; background: var(--map-bg); }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #map.dragging { cursor: grabbing; }
+  .maphud { position: absolute; left: 10px; bottom: 8px; color: var(--ink-2); font: 11px var(--mono); pointer-events: none; }
+  .maphelp { position: absolute; right: 10px; bottom: 8px; color: var(--ink-3); font-size: 11px; pointer-events: none; }
+  /* right column */
+  .side { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--panel); overflow: auto; }
+  .sec { border-bottom: 1px solid var(--line); }
+  .sec h2 { margin: 0; padding: 7px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+            color: var(--ink-2); background: var(--panel-2); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .sec h2 span { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--ink-3); font-family: var(--mono); }
+  .body { padding: 10px 12px; }
+  .thermal { position: relative; background: #000; aspect-ratio: 4 / 3; border: 1px solid var(--line); }
+  .thermal img, .thermal canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+  .thermal canvas { cursor: crosshair; }
+  .thermal .na { position: absolute; inset: 0; display: grid; place-items: center; color: #ddd; font-size: 12px; background: rgba(0,0,0,.55); }
+  .thermal.stale img { opacity: .35; }
+  .seg { display: flex; margin-top: 8px; border: 1px solid var(--line-2); }
+  .seg button { flex: 1; background: transparent; color: var(--ink-2); border: 0; border-right: 1px solid var(--line-2);
+                padding: 4px 0; font: 11px var(--sans); cursor: pointer; }
+  .seg button:last-child { border-right: 0; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+  .scale { height: 8px; margin-top: 8px; border: 1px solid var(--line-2); }
+  .scale-l { display: flex; justify-content: space-between; color: var(--ink-2); font: 11px var(--mono); margin-top: 2px; }
+  .readout { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: 8px; border: 1px solid var(--line); }
+  .readout div { padding: 4px 6px; border-right: 1px solid var(--line); }
+  .readout div:last-child { border-right: 0; }
+  .readout .k { display: block; color: var(--ink-3); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+  .readout .v { font: 14px var(--mono); }
+  .cursor { margin-top: 6px; font: 12px var(--mono); color: var(--ink-2); min-height: 16px; }
+  .ptz { display: grid; grid-template-columns: 132px 1fr; gap: 10px; align-items: start; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; }
+  .kv .k { color: var(--ink-3); }
+  .kv .v { font-family: var(--mono); text-align: right; }
+  .btns { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .btn { background: transparent; color: var(--ink); border: 1px solid var(--line-2); padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .msg { margin-top: 6px; font-size: 11px; color: var(--ink-3); min-height: 14px; }
+  .target .kv { grid-template-columns: 96px 1fr; }
+  .target .kv .v { text-align: left; }
+  .tags span { display: inline-block; border: 1px solid var(--alarm); color: var(--alarm); padding: 0 5px; margin: 0 4px 3px 0; font-size: 11px; }
+  .empty { color: var(--ink-3); }
+  /* log */
+  .log { grid-column: 1 / -1; border-top: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  .log h2 { margin: 0; padding: 6px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-2);
+            border-bottom: 1px solid var(--line); background: var(--panel-2); }
+  .log .scroll { overflow: auto; min-height: 0; }
+  table { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
+  td { padding: 3px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td:last-child { white-space: normal; width: 100%; }
+  tr.alarm td:first-child { box-shadow: inset 3px 0 0 var(--alarm); }
+  tr.alarm td:last-child { color: var(--alarm); }
+  tr.sys td:last-child { color: var(--ink-2); }
+  tr[data-gid]:hover { background: var(--panel-2); cursor: pointer; }
+  td.t { color: var(--ink-3); }
+  @media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto 52vh auto 220px; height: auto; }
+    .side { border-left: 0; border-top: 1px solid var(--line); }
+    .strip { overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="strip">
+    <div class="site" id="site">—</div>
+    <div><span class="k">Yerel</span> <span class="num" id="clock">--:--:--</span></div>
+    <div><span class="k">UTC</span> <span class="num" id="utc">--:--:--</span></div>
+    <div><span class="led" id="led-fusion"></span><span class="k">Füzyon</span></div>
+    <div><span class="led" id="led-thermal"></span><span class="k">Termal</span></div>
+    <div><span class="led" id="led-ptz"></span><span class="k">PTZ</span> <span class="num" id="ptz-state">—</span></div>
+    <div><span class="k">Hedef</span> <span class="num" id="n-ent">0</span></div>
+    <div><span class="k">E2E p50</span> <span class="num" id="e2e">—</span></div>
+    <div class="spacer"></div>
+  </div>
+
+  <div class="mapwrap">
+    <canvas id="map" aria-label="Saha haritası"></canvas>
+    <div class="maphud" id="hud">x —  y —</div>
+    <div class="maphelp">Tekerlek: yakınlaştır · Sürükle: kaydır · Çift tık: sığdır · Shift+tık: PTZ yönelt</div>
+  </div>
+
+  <aside class="side">
+    <section class="sec">
+      <h2>Termal <span id="th-meta">—</span></h2>
+      <div class="body">
+        <div class="thermal">
+          <img id="th-img" alt="">
+          <canvas id="th-ovl"></canvas>
+          <div class="na" id="th-na">termal akış yok</div>
+        </div>
+        <div class="seg" id="palettes">
+          <button data-p="white_hot">Beyaz sıcak</button><button data-p="black_hot">Siyah sıcak</button>
+          <button data-p="iron">Demir</button><button data-p="rainbow_hc">Gökkuşağı</button><button data-p="arctic">Arktik</button>
+        </div>
+        <div class="scale" id="scale"></div>
+        <div class="scale-l"><span id="sc-min">—</span><span id="sc-max">—</span></div>
+        <div class="readout">
+          <div><span class="k">Min</span><span class="v" id="t-min">—</span></div>
+          <div><span class="k">Ort</span><span class="v" id="t-mean">—</span></div>
+          <div><span class="k">Maks</span><span class="v" id="t-max">—</span></div>
+        </div>
+        <div class="cursor" id="t-cursor"></div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2>PTZ <span id="ptz-id">—</span></h2>
+      <div class="body">
+        <div class="ptz">
+          <svg id="compass" viewBox="-66 -66 132 132" width="132" height="132" aria-label="Azimut"></svg>
+          <div class="kv">
+            <span class="k">Azimut</span><span class="v" id="p-az">—</span>
+            <span class="k">Elevasyon</span><span class="v" id="p-el">—</span>
+            <span class="k">Zoom</span><span class="v" id="p-zoom">—</span>
+            <span class="k">Odak uz.</span><span class="v" id="p-focal">—</span>
+            <span class="k">Odak mesafe</span><span class="v" id="p-dist">—</span>
+            <span class="k">YGA</span><span class="v" id="p-hfov">—</span>
+            <span class="k">Durum</span><span class="v" id="p-state">—</span>
+          </div>
+        </div>
+        <div class="btns">
+          <button class="btn" data-cmd="stop">Durdur</button>
+          <button class="btn" data-cmd="focus">Odakla</button>
+          <button class="btn" data-cmd="home">Ev konumu</button>
+          <button class="btn primary" id="btn-track" disabled>Seçili hedefi izle</button>
+        </div>
+        <div class="msg" id="ptz-msg"></div>
+      </div>
+    </section>
+
+    <section class="sec target">
+      <h2>Seçili hedef <span id="sel-id">—</span></h2>
+      <div class="body" id="detail"><span class="empty">Haritada bir hedef seçin.</span></div>
+    </section>
+  </aside>
+
+  <section class="log">
+    <h2>Olay kaydı</h2>
+    <div class="scroll"><table><tbody id="log"></tbody></table></div>
+  </section>
+</div>
+<script>
+(() => {
+  "use strict";
+  const TOKEN = "__C2_TOKEN__";
+  const STILL = new URLSearchParams(location.search).has("still");   // one-shot snapshot (reports, printing)
+  const $ = (id) => document.getElementById(id);
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const PAL = {
+    white_hot: [[0, "#000"], [1, "#fff"]], black_hot: [[0, "#fff"], [1, "#000"]],
+    iron: [[0, "#00000a"], [.18, "#280078"], [.38, "#960096"], [.55, "#dc3232"], [.72, "#fa8c00"], [.88, "#ffdc28"], [1, "#ffffe6"]],
+    rainbow_hc: [[0, "#000028"], [.15, "#0000c8"], [.32, "#00aadc"], [.48, "#00c83c"], [.64, "#e6e600"], [.8, "#fa7800"], [.92, "#e60000"], [1, "#fff"]],
+    arctic: [[0, "#0a0a28"], [.35, "#1450aa"], [.6, "#78bee6"], [.8, "#fac878"], [1, "#fff5dc"]],
+  };
+  let cop = null, th = null, selected = null, palette = localStore("palette") || "iron";
+  const fmt = (v, d = 1, u = "") => (v == null || !isFinite(v)) ? "—" : v.toFixed(d) + u;
+  const hhmmss = (t, utc) => { const d = new Date(t * 1000); return utc ? d.toISOString().slice(11, 19) : d.toLocaleTimeString("tr-TR", { hour12: false }); };
+  function localStore(k, v) { try { if (v === undefined) return localStorage.getItem("c2." + k); localStorage.setItem("c2." + k, v); } catch (e) { return null; } }
+  function idColor(gid) { const h = (gid * 47) % 360; return `hsl(${h} 45% 62%)`; }
+
+  // ------------------------------------------------------------------ clock
+  setInterval(() => { const n = Date.now() / 1000; $("clock").textContent = hhmmss(n); $("utc").textContent = hhmmss(n, true); }, 500);
+
+  // ------------------------------------------------------------------ map view (pan / zoom)
+  const cv = $("map"), ctx = cv.getContext("2d");
+  const view = { cx: 0, cy: 0, s: 4, fitted: false };
+  function bounds() {
+    if (cop && cop.site && cop.site.bounds) return cop.site.bounds;
+    const xs = [], ys = [];
+    (cop ? cop.cameras : []).forEach(c => c.footprint.forEach(([x, y]) => { xs.push(x); ys.push(y); }));
+    (cop ? cop.entities : []).forEach(e => { xs.push(e.x); ys.push(e.y); });
+    return xs.length ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] : [-50, -50, 50, 50];
+  }
+  function fit() {
+    const [x0, y0, x1, y1] = bounds(), w = cv.clientWidth, h = cv.clientHeight;
+    view.s = Math.min((w - 60) / Math.max(x1 - x0, 1), (h - 60) / Math.max(y1 - y0, 1));
+    view.cx = (x0 + x1) / 2; view.cy = (y0 + y1) / 2; view.fitted = true;
+  }
+  const toPx = (x, y) => [cv.clientWidth / 2 + (x - view.cx) * view.s, cv.clientHeight / 2 - (y - view.cy) * view.s];
+  const toW = (u, v) => [view.cx + (u - cv.clientWidth / 2) / view.s, view.cy - (v - cv.clientHeight / 2) / view.s];
+  function resize() {
+    const dpr = window.devicePixelRatio || 1, r = cv.getBoundingClientRect();
+    cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (!view.fitted && cop) fit();
+    drawMap();
+  }
+  let drag = null;
+  cv.addEventListener("mousedown", (e) => { drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy, moved: false }; cv.classList.add("dragging"); });
+  window.addEventListener("mouseup", (e) => {
+    cv.classList.remove("dragging");
+    if (drag && !drag.moved) clickMap(e);
+    drag = null;
+  });
+  window.addEventListener("mousemove", (e) => {
+    const r = cv.getBoundingClientRect(), u = e.clientX - r.left, v = e.clientY - r.top;
+    if (u >= 0 && v >= 0 && u <= r.width && v <= r.height) { const [x, y] = toW(u, v); $("hud").textContent = `x ${x.toFixed(1)} m   y ${y.toFixed(1)} m`; }
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    view.cx = drag.cx - dx / view.s; view.cy = drag.cy + dy / view.s; drawMap();
+  });
+  cv.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const r = cv.getBoundingClientRect(), u = e.clientX - r.left, v = e.clientY - r.top;
+    const [wx, wy] = toW(u, v), k = Math.exp(-e.deltaY * 0.0015);
+    view.s = Math.min(400, Math.max(0.05, view.s * k));
+    view.cx = wx - (u - cv.clientWidth / 2) / view.s; view.cy = wy + (v - cv.clientHeight / 2) / view.s; drawMap();
+  }, { passive: false });
+  cv.addEventListener("dblclick", () => { fit(); drawMap(); });
+
+  function clickMap(e) {
+    if (!cop) return;
+    const r = cv.getBoundingClientRect(), u = e.clientX - r.left, v = e.clientY - r.top;
+    if (e.shiftKey) { const [x, y] = toW(u, v); ptz({ action: "slew", x, y }); return; }
+    let best = null, bd = 14;
+    cop.entities.forEach(en => { const [a, b] = toPx(en.x, en.y); const d = Math.hypot(a - u, b - v); if (d < bd) { bd = d; best = en.gid; } });
+    selected = best; renderSide(); drawMap();
+  }
+
+  function niceStep(px) { const m = px / view.s, p = Math.pow(10, Math.floor(Math.log10(m))); return [1, 2, 5, 10].map(k => k * p).find(s => s >= m) || 10 * p; }
+
+  function drawMap() {
+    const w = cv.clientWidth, h = cv.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+    if (!cop) return;
+    // grid with major lines every 5 minor steps
+    const step = niceStep(28), [wx0, wy1] = toW(0, 0), [wx1, wy0] = toW(w, h);
+    ctx.lineWidth = 1;
+    for (let gx = Math.floor(wx0 / step) * step; gx <= wx1; gx += step) {
+      const [u] = toPx(gx, 0); ctx.strokeStyle = Math.round(gx / step) % 5 === 0 ? css("--grid-major") : css("--grid");
+      ctx.beginPath(); ctx.moveTo(Math.round(u) + .5, 0); ctx.lineTo(Math.round(u) + .5, h); ctx.stroke();
+    }
+    for (let gy = Math.floor(wy0 / step) * step; gy <= wy1; gy += step) {
+      const [, v] = toPx(0, gy); ctx.strokeStyle = Math.round(gy / step) % 5 === 0 ? css("--grid-major") : css("--grid");
+      ctx.beginPath(); ctx.moveTo(0, Math.round(v) + .5); ctx.lineTo(w, Math.round(v) + .5); ctx.stroke();
+    }
+    // site boundary
+    if (cop.site.bounds) {
+      const [x0, y0, x1, y1] = cop.site.bounds, [a, b] = toPx(x0, y1), [c, d] = toPx(x1, y0);
+      ctx.strokeStyle = css("--line-2"); ctx.setLineDash([4, 4]); ctx.strokeRect(a + .5, b + .5, c - a, d - b); ctx.setLineDash([]);
+    }
+    // camera footprints
+    ctx.font = "11px " + css("--mono");
+    cop.cameras.forEach(c => {
+      if (c.footprint.length > 2) {
+        ctx.beginPath(); c.footprint.forEach(([x, y], i) => { const [u, v] = toPx(x, y); i ? ctx.lineTo(u, v) : ctx.moveTo(u, v); });
+        ctx.closePath(); ctx.fillStyle = css("--fov"); ctx.fill(); ctx.strokeStyle = css("--fov-edge"); ctx.stroke();
+      }
+      if (c.position) {
+        const [u, v] = toPx(c.position[0], c.position[1]);
+        ctx.fillStyle = css("--ink-2"); ctx.fillRect(Math.round(u) - 3, Math.round(v) - 3, 7, 7);
+        ctx.fillStyle = css("--ink-2"); ctx.fillText(c.id, u + 7, v - 6);
+      }
+    });
+    // PTZ heads: aim ray and field-of-view wedge
+    cop.ptz.forEach(p => {
+      const [u, v] = toPx(p.x, p.y);
+      if (p.bearing_deg != null && p.hfov_deg) {
+        const r = Math.max(40, 80 * view.s), a = -p.bearing_deg * Math.PI / 180, hw = p.hfov_deg * Math.PI / 360;
+        ctx.beginPath(); ctx.moveTo(u, v); ctx.arc(u, v, r, a - hw, a + hw); ctx.closePath();
+        ctx.fillStyle = "rgba(224,163,58,.10)"; ctx.fill(); ctx.strokeStyle = css("--accent"); ctx.stroke();
+      }
+      ctx.save(); ctx.translate(u, v); ctx.rotate(Math.PI / 4); ctx.fillStyle = css("--accent"); ctx.fillRect(-4, -4, 8, 8); ctx.restore();
+      ctx.fillStyle = css("--accent"); ctx.fillText(p.id + (p.target ? `  › G-${p.target}` : ""), u + 9, v + 4);
+    });
+    // trails
+    cop.entities.forEach(e => {
+      if (e.breadcrumbs.length < 2) return;
+      ctx.beginPath(); e.breadcrumbs.forEach(([x, y], i) => { const [u, v] = toPx(x, y); i ? ctx.lineTo(u, v) : ctx.moveTo(u, v); });
+      ctx.strokeStyle = idColor(e.gid); ctx.globalAlpha = e.gid === selected ? 0.95 : 0.35; ctx.lineWidth = e.gid === selected ? 2 : 1;
+      ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    });
+    // entities (labels placed greedily; selected and alarmed targets win collisions)
+    const placed = [];
+    const free = (x, y, w) => !placed.some(r => x < r[0] + r[2] && x + w > r[0] && y - 11 < r[1] && y > r[1] - 11);
+    const order = cop.entities.slice().sort((a, b) => ((b.gid === selected) * 2 + (b.tags.length > 0)) - ((a.gid === selected) * 2 + (a.tags.length > 0)));
+    order.forEach(e => {
+      const [u, v] = toPx(e.x, e.y), alarm = e.tags.length > 0, col = alarm ? css("--alarm") : idColor(e.gid);
+      const r = Math.min(40, (e.pos_std || 0.3) * 2 * view.s);
+      if (r > 6) { ctx.beginPath(); ctx.arc(u, v, r, 0, 2 * Math.PI); ctx.strokeStyle = col; ctx.globalAlpha = .3; ctx.stroke(); ctx.globalAlpha = 1; }
+      ctx.beginPath(); ctx.arc(u, v, 4, 0, 2 * Math.PI);
+      if (e.status === "lost") { ctx.setLineDash([2, 2]); ctx.strokeStyle = col; ctx.stroke(); ctx.setLineDash([]); }
+      else if (e.provisional) { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke(); ctx.lineWidth = 1; }
+      else { ctx.fillStyle = col; ctx.fill(); }
+      if (e.speed > 0.3 && e.status === "active") { ctx.beginPath(); ctx.moveTo(u, v); ctx.lineTo(u + e.vx * view.s * 2, v - e.vy * view.s * 2); ctx.strokeStyle = col; ctx.stroke(); }
+      if (e.gid === selected) { ctx.strokeStyle = css("--ink"); ctx.strokeRect(Math.round(u) - 8.5, Math.round(v) - 8.5, 17, 17); }
+      const lw = ctx.measureText(e.label).width;
+      if (free(u + 8, v - 7, lw)) { placed.push([u + 8, v - 7, lw]); ctx.fillStyle = alarm ? css("--alarm") : css("--ink"); ctx.fillText(e.label, u + 8, v - 7); }
+    });
+    // scale bar + north arrow
+    const sb = niceStep(110), len = sb * view.s, y = h - 26;
+    ctx.strokeStyle = css("--ink-2"); ctx.beginPath(); ctx.moveTo(10, y); ctx.lineTo(10 + len, y); ctx.moveTo(10, y - 4); ctx.lineTo(10, y + 1);
+    ctx.moveTo(10 + len, y - 4); ctx.lineTo(10 + len, y + 1); ctx.stroke();
+    ctx.fillStyle = css("--ink-2"); ctx.fillText(sb >= 1000 ? (sb / 1000) + " km" : sb + " m", 14 + len, y + 4);
+    ctx.beginPath(); ctx.moveTo(w - 20, 16); ctx.lineTo(w - 25, 30); ctx.lineTo(w - 20, 27); ctx.lineTo(w - 15, 30); ctx.closePath(); ctx.fillStyle = css("--ink-2"); ctx.fill();
+    ctx.fillText("K", w - 24, 44);
+  }
+
+  // ------------------------------------------------------------------ PTZ panel
+  function compass(bearing, hfov) {
+    const svg = $("compass"); const ns = "http://www.w3.org/2000/svg";
+    const el = (n, a) => { const e = document.createElementNS(ns, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+    svg.innerHTML = "";
+    svg.appendChild(el("circle", { r: 60, fill: "none", stroke: css("--line-2") }));
+    for (let d = 0; d < 360; d += 10) {
+      const a = d * Math.PI / 180, r1 = d % 90 === 0 ? 50 : d % 30 === 0 ? 54 : 57;
+      svg.appendChild(el("line", { x1: 60 * Math.sin(a), y1: -60 * Math.cos(a), x2: r1 * Math.sin(a), y2: -r1 * Math.cos(a), stroke: css("--ink-3") }));
+    }
+    [["K", 0], ["D", 90], ["G", 180], ["B", 270]].forEach(([t, d]) => {
+      const a = d * Math.PI / 180, txt = el("text", { x: 40 * Math.sin(a), y: -40 * Math.cos(a) + 4, "text-anchor": "middle", fill: css("--ink-2"), "font-size": 10, "font-family": "system-ui" });
+      txt.textContent = t; svg.appendChild(txt);
+    });
+    if (bearing == null) return;
+    if (hfov) {
+      const a1 = (bearing - hfov / 2) * Math.PI / 180, a2 = (bearing + hfov / 2) * Math.PI / 180, R = 58;
+      svg.appendChild(el("path", { d: `M0 0 L${R * Math.sin(a1)} ${-R * Math.cos(a1)} A${R} ${R} 0 ${hfov > 180 ? 1 : 0} 1 ${R * Math.sin(a2)} ${-R * Math.cos(a2)} Z`,
+        fill: "rgba(224,163,58,.18)", stroke: "none" }));
+    }
+    const a = bearing * Math.PI / 180;
+    svg.appendChild(el("line", { x1: 0, y1: 0, x2: 58 * Math.sin(a), y2: -58 * Math.cos(a), stroke: css("--accent"), "stroke-width": 2 }));
+    svg.appendChild(el("circle", { r: 3, fill: css("--accent") }));
+  }
+
+  async function ptz(cmd) {
+    $("ptz-msg").textContent = "gönderiliyor…";
+    try {
+      const r = await fetch("/api/ptz", { method: "POST", headers: { "Content-Type": "application/json", "X-C2-Token": TOKEN }, body: JSON.stringify(cmd) });
+      const j = await r.json().catch(() => ({}));
+      $("ptz-msg").textContent = r.ok ? (j.message || "tamam") : ("hata: " + (j.error || r.status));
+    } catch (e) { $("ptz-msg").textContent = "bağlantı hatası"; }
+  }
+  document.querySelectorAll("[data-cmd]").forEach(b => b.addEventListener("click", () => ptz({ action: b.dataset.cmd })));
+  $("btn-track").addEventListener("click", () => { if (selected != null) ptz({ action: "track", gid: selected }); });
+
+  // ------------------------------------------------------------------ thermal panel
+  const img = $("th-img"), ovl = $("th-ovl"), octx = ovl.getContext("2d");
+  let lastFrame = -1, cursor = null;
+  function setPalette(p) {
+    palette = p; localStore("palette", p); lastFrame = -1;
+    document.querySelectorAll("#palettes button").forEach(b => b.setAttribute("aria-pressed", b.dataset.p === p ? "true" : "false"));
+    $("scale").style.background = `linear-gradient(90deg, ${PAL[p].map(([s, c]) => `${c} ${s * 100}%`).join(", ")})`;
+  }
+  document.querySelectorAll("#palettes button").forEach(b => b.addEventListener("click", () => setPalette(b.dataset.p)));
+  setPalette(PAL[palette] ? palette : "iron");
+
+  function tempAt(nx, ny) {
+    if (!th || !th.grid) return null;
+    const gx = Math.min(th.grid_w - 1, Math.max(0, Math.floor(nx * th.grid_w)));
+    const gy = Math.min(th.grid_h - 1, Math.max(0, Math.floor(ny * th.grid_h)));
+    return th.grid[gy * th.grid_w + gx];
+  }
+  ovl.addEventListener("mousemove", (e) => { const r = ovl.getBoundingClientRect(); cursor = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; drawThermalOverlay(); });
+  ovl.addEventListener("mouseleave", () => { cursor = null; drawThermalOverlay(); });
+
+  function drawThermalOverlay() {
+    const r = ovl.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    if (ovl.width !== Math.round(r.width * dpr)) { ovl.width = Math.round(r.width * dpr); ovl.height = Math.round(r.height * dpr); }
+    octx.setTransform(dpr, 0, 0, dpr, 0, 0); octx.clearRect(0, 0, r.width, r.height);
+    if (!th || !th.available) return;
+    const W = r.width, H = r.height;
+    octx.font = "10px " + css("--mono"); octx.lineWidth = 1;
+    (th.rois || []).forEach(roi => {
+      octx.beginPath(); roi.poly.forEach(([x, y], i) => i ? octx.lineTo(x * W, y * H) : octx.moveTo(x * W, y * H)); octx.closePath();
+      octx.strokeStyle = roi.level === "alarm" ? "#ff5a50" : roi.level === "prealarm" ? "#ffb000" : "rgba(255,255,255,.6)"; octx.stroke();
+      octx.fillStyle = octx.strokeStyle; octx.fillText(roi.name, roi.poly[0][0] * W + 3, roi.poly[0][1] * H + 11);
+    });
+    (th.hotspots || []).slice(0, 5).forEach(h => {
+      const x = h.x * W, y = h.y * H;
+      octx.strokeStyle = "rgba(255,255,255,.9)"; octx.beginPath(); octx.moveTo(x - 5, y); octx.lineTo(x + 5, y); octx.moveTo(x, y - 5); octx.lineTo(x, y + 5); octx.stroke();
+      octx.fillStyle = "#fff"; octx.fillText(h.max.toFixed(1), x + 6, y - 4);
+    });
+    (th.fires || []).forEach(f => { octx.strokeStyle = "#ff5a50"; octx.lineWidth = 2; octx.strokeRect(f.x * W - 9, f.y * H - 9, 18, 18); octx.lineWidth = 1; });
+    if (cursor) {
+      const t = tempAt(cursor[0], cursor[1]);
+      $("t-cursor").textContent = t == null ? "" : `imleç ${t.toFixed(1)} °C   (${Math.round(cursor[0] * th.width)}, ${Math.round(cursor[1] * th.height)})`;
+    } else $("t-cursor").textContent = "";
+  }
+
+  async function pollThermal() {
+    try {
+      const r = await fetch("/api/thermal/state", { cache: "no-store" });
+      th = await r.json();
+    } catch (e) { th = null; }
+    const ok = th && th.available;
+    $("th-na").style.display = ok ? "none" : "grid";
+    $("th-na").textContent = lastFrame >= 0 ? "bağlantı yok — son kare gösteriliyor" : "termal akış yok";
+    img.parentElement.classList.toggle("stale", !ok);
+    $("led-thermal").className = "led " + (ok ? (th.age_ms < 2000 ? "ok" : "warn") : "bad");
+    if (ok) {
+      if (th.frame !== lastFrame) { lastFrame = th.frame; img.src = `/api/thermal/frame.png?palette=${palette}&f=${th.frame}`; }
+      $("t-min").textContent = fmt(th.min, 1, " °C"); $("t-mean").textContent = fmt(th.mean, 1, " °C"); $("t-max").textContent = fmt(th.max, 1, " °C");
+      $("sc-min").textContent = fmt(th.min, 1); $("sc-max").textContent = fmt(th.max, 1);
+      $("th-meta").textContent = `${th.width}×${th.height}  #${th.frame}  ${th.age_ms} ms`;
+    }
+    drawThermalOverlay();
+    if (!STILL) setTimeout(pollThermal, 250);
+  }
+
+  // ------------------------------------------------------------------ side panel + log
+  function renderSide() {
+    if (!cop) return;
+    $("site").textContent = cop.site.name;
+    $("n-ent").textContent = cop.stats.entities;
+    $("e2e").textContent = cop.stats.e2e_p50_ms != null ? cop.stats.e2e_p50_ms + " ms" : "—";
+    const p = cop.ptz[0], pose = cop.ptz_pose || null;
+    $("ptz-id").textContent = p ? p.id : "—";
+    const trState = { idle: "boşta", slewing: "dönüyor", acquiring: "arıyor", locked: "kilitli" };
+    $("ptz-state").textContent = p ? (trState[p.state] || p.state) : "—";
+    $("led-ptz").className = "led " + (p ? (pose && pose.online === false ? "bad" : "ok") : "");
+    const az = pose ? pose.azimuth : null;
+    $("p-az").textContent = fmt(az, 3, "°"); $("p-el").textContent = fmt(pose && pose.elevation, 3, "°");
+    $("p-zoom").textContent = fmt(pose && pose.zoom, 1, "×"); $("p-focal").textContent = fmt(pose && pose.focal_mm, 0, " mm");
+    $("p-dist").textContent = fmt(pose && pose.focus_m, 0, " m"); $("p-hfov").textContent = fmt(p && p.hfov_deg, 2, "°");
+    $("p-state").textContent = p ? (trState[p.state] || p.state) : "—";
+    compass(p && p.bearing_deg != null ? (90 - p.bearing_deg + 360) % 360 : null, p && p.hfov_deg);
+    $("btn-track").disabled = selected == null || !cop.capabilities || !cop.capabilities.ptz_control;
+    const e = cop.entities.find(x => x.gid === selected), d = $("detail");
+    $("sel-id").textContent = e ? e.label : "—";
+    if (!e) d.innerHTML = `<span class="empty">${selected ? "G-" + selected + " artık izlenmiyor." : "Haritada bir hedef seçin."}</span>`;
+    else {
+      const visits = e.visits.map(([c, a, b]) => `${c} ${hhmmss(a)}${b ? "–" + hhmmss(b) : " →"}`).join("<br>");
+      d.innerHTML = `<div class="kv">
+        <span class="k">Durum</span><span class="v">${e.status === "active" ? "aktif" : "kayıp"}${e.provisional ? ", geçici" : ""}</span>
+        <span class="k">İlk görülme</span><span class="v">${hhmmss(e.first_seen)}</span>
+        <span class="k">Hız</span><span class="v">${fmt(e.speed, 1, " m/s")}</span>
+        <span class="k">Konum</span><span class="v">${fmt(e.x, 1)}, ${fmt(e.y, 1)} m ±${fmt(e.pos_std, 2)}</span>
+        <span class="k">Kameralar</span><span class="v">${e.cameras.join(", ") || "—"}</span>
+        <span class="k">Re-ID</span><span class="v">${e.embeddings} vektör${e.aliases.length ? ", birleşen " + e.aliases.map(a => "G-" + a).join(" ") : ""}</span>
+        <span class="k">Geçmiş</span><span class="v">${visits || "—"}</span>
+      </div>${e.tags.length ? `<div class="tags" style="margin-top:8px">${e.tags.map(t => `<span>${t}</span>`).join("")}</div>` : ""}`;
+    }
+    const alarmKinds = ["intrusion", "tripwire", "loitering", "fire", "roi_alarm", "roi_prealarm", "roi_rise"];
+    $("log").innerHTML = cop.events.slice().reverse().map(ev => {
+      const cls = alarmKinds.includes(ev.kind) ? "alarm" : ["new", "retired", "lost"].includes(ev.kind) ? "sys" : "";
+      return `<tr class="${cls}"${ev.gid != null ? ` data-gid="${ev.gid}"` : ""}><td class="t">${hhmmss(ev.t)}</td><td>${ev.camera || "—"}</td><td>${ev.gid != null ? "G-" + ev.gid : "—"}</td><td>${escapeHtml(ev.text)}</td></tr>`;
+    }).join("");
+  }
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  $("log").addEventListener("click", (ev) => { const g = ev.target.closest("[data-gid]"); if (g) { selected = +g.dataset.gid; renderSide(); drawMap(); } });
+
+  function update(snap) { cop = snap; if (!view.fitted) { resize(); fit(); } renderSide(); drawMap(); }
+  function connect() {
+    const es = new EventSource("/api/stream");
+    es.onopen = () => $("led-fusion").className = "led ok";
+    es.onmessage = (m) => update(JSON.parse(m.data));
+    es.onerror = () => { $("led-fusion").className = "led bad"; es.close(); setTimeout(connect, 1500); };
+  }
+  window.addEventListener("resize", resize);
+  fetch("/api/cop").then(r => r.json()).then((s) => { update(s); if (STILL) $("led-fusion").className = "led ok"; }).catch(() => {});
+  if (!STILL) connect();
+  pollThermal(); resize();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+path: ./dataset_cctv_desk
+train: images/train
+val: images/val
+names:
+  0: insan
+  1: kitap
+  2: dizustu_bilgisayar
+  3: monitor
+  4: klavye
+  5: fare
+  6: telefon
+  7: bardak
+  8: sise
+  9: kalem

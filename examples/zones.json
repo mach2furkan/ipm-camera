@@ -1,0 +1,23 @@
+{
+  "coordinates": "normalized",
+  "rules": [
+    {
+      "type": "tripwire",
+      "name": "ana-kapi",
+      "a": [0.08, 0.62],
+      "b": [0.86, 0.57],
+      "inside": [0.50, 0.90],
+      "alarm_on": "in",
+      "cooldown_s": 2.0
+    },
+    {
+      "type": "zone",
+      "name": "yasak-bolge",
+      "polygon": [[0.60, 0.30], [0.95, 0.30], [0.95, 0.90], [0.78, 0.90], [0.78, 0.55], [0.60, 0.55]],
+      "min_dwell_s": 0.5,
+      "exit_grace_s": 1.0,
+      "loiter_s": 15,
+      "loiter_radius_px": 30
+    }
+  ]
+}

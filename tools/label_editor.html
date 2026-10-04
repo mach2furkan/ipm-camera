@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="tr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Etiket inceleme ve düzeltme</title>
+<style>
+:root{color-scheme:dark}body{margin:0;font:15px system-ui;background:#111827;color:#e5e7eb}
+header{padding:20px 28px;background:#1f2937}h1{margin:0 0 8px;font-size:24px}p{margin:8px 0}
+main{display:grid;grid-template-columns:minmax(400px,1fr) 330px;gap:20px;padding:24px}
+button,select,input{font:inherit;padding:8px;border:1px solid #475569;border-radius:6px;background:#1f2937;color:inherit}
+button{cursor:pointer}button:disabled{opacity:.4;cursor:default}.toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+#stage{overflow:auto;max-height:78vh;background:#030712;border:1px solid #475569}canvas{display:block;touch-action:none}
+aside{background:#1f2937;padding:18px;border-radius:8px}label{display:block;margin:12px 0}input[type=text]{width:90%}
+#finding{color:#fbbf24}#boxes{max-height:240px;overflow:auto}#boxes button{display:block;width:100%;text-align:left;margin:5px 0}
+.selected{outline:2px solid #38bdf8}#approve{background:#0369a1;width:100%}.muted{color:#9ca3af}
+@media(max-width:850px){main{grid-template-columns:1fr}}
+</style>
+<header><h1>Etiket inceleme ve düzeltme</h1><p>Eksik nesneyi kutuyla işaretleyin. Her hedef sınıfı orijinal görüntüde kontrol edin.</p></header>
+<main><section><div class="toolbar"><button id="prev">← Önceki</button><button id="next">Sonraki →</button>
+<select id="queue"><option value="all">Tüm görüntüler</option><option value="needs_correction">Düzeltme gerekenler</option><option value="pending">Bekleyenler</option></select>
+<select id="mode"><option value="select">Kutu seç</option><option value="draw">Yeni kutu çiz</option></select>
+<select id="cls"></select><button id="remove">Seçili kutuyu sil</button><button id="undo">Geri al</button>
+<select id="zoom"><option value="fit">Ekrana sığdır</option><option value="1">%100</option><option value="2">%200</option></select></div>
+<p id="counter"></p><p id="progress" class="muted"></p><p id="filename" class="muted"></p><div id="stage"><canvas id="canvas"></canvas></div></section>
+<aside><p id="finding"></p><h3>Kutular</h3><div id="boxes"></div>
+<label><input id="showSuggestions" type="checkbox" checked> Model adaylarını kesikli kutuyla göster</label>
+<p class="muted">Model adayları doğrulanmış etiket değildir. Görüntüde kontrol ettikten sonra ekleyin.</p><div id="suggestions"></div>
+<label>İnceleyen<input id="reviewer" type="text" autocomplete="name"></label>
+<label>Çekim / kaynak oturumu<input id="session" type="text" placeholder="Aynı sahnenin karelerinde aynı kimlik"></label>
+<div id="checks"></div><label><input id="resolved" type="checkbox"> Açık etiket bulgusunu düzelttim</label>
+<button id="draft" disabled>Taslağı kaydet</button><button id="restore" disabled>Son kaydı geri al</button>
+<button id="approve" disabled>Düzeltme ve inceleme kaydını indir</button><p id="message" role="status"></p>
+<p id="saveHelp" class="muted">İndirilen JSON dosyasını içe aktarmak etiketleri günceller. Görüntü değiştirirken kaydedilmeyen kutular için uyarı gösterilir.</p></aside></main>
+<script>
+const data=/*DATA*/;
+const api=/*API*/;
+const $=id=>document.getElementById(id), canvas=$('canvas'), ctx=canvas.getContext('2d'), image=new Image();
+let index=0, boxes=[], selected=-1, history=[], start=null, dirty=false, ready=false, busy=false, filtered=data.items.map((_,i)=>i);
+const colours=['#f87171','#fbbf24','#a3e635','#34d399','#22d3ee','#38bdf8','#818cf8','#c084fc','#f472b6','#fb923c'];
+data.names.forEach((name,i)=>{let o=document.createElement('option');o.value=i;o.textContent=i+' '+name;$('cls').append(o);
+let l=document.createElement('label'),c=document.createElement('input');c.type='checkbox';c.className='class-check';l.append(c,document.createTextNode(' '+name+' kontrol edildi'));$('checks').append(l);c.onchange=eligibility;});
+function current(){return data.items[index]}
+function eligibility(){$('approve').disabled=busy||!ready||!$('reviewer').value.trim()||!$('session').value.trim()||![...document.querySelectorAll('.class-check')].every(c=>c.checked)||(!!current().finding&&!$('resolved').checked);$('draft').disabled=!api||busy||!ready||!$('reviewer').value.trim();$('restore').disabled=!api||busy||!ready;}
+function remember(){history.push(structuredClone(boxes));dirty=true;document.querySelectorAll('.class-check').forEach(c=>c.checked=false);$('resolved').checked=false;eligibility();}
+function point(e){const r=canvas.getBoundingClientRect();return [Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))];}
+function overlap(a,b){let left=Math.max(a[1]-a[3]/2,b[1]-b[3]/2),top=Math.max(a[2]-a[4]/2,b[2]-b[4]/2),right=Math.min(a[1]+a[3]/2,b[1]+b[3]/2),bottom=Math.min(a[2]+a[4]/2,b[2]+b[4]/2),area=Math.max(0,right-left)*Math.max(0,bottom-top);return area/(a[3]*a[4]+b[3]*b[4]-area);}
+function render(){if(!ready)return;ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,0,canvas.width,canvas.height);
+boxes.forEach((b,i)=>{let [c,x,y,w,h]=b,l=(x-w/2)*canvas.width,t=(y-h/2)*canvas.height;ctx.strokeStyle=colours[c];ctx.lineWidth=i===selected?4:2;ctx.strokeRect(l,t,w*canvas.width,h*canvas.height);
+ctx.font='14px system-ui';let label=c+' '+data.names[c];ctx.fillStyle='#111827';ctx.fillRect(l,Math.max(0,t-19),ctx.measureText(label).width+8,19);ctx.fillStyle=colours[c];ctx.fillText(label,l+4,Math.max(15,t-4));});
+if($('showSuggestions').checked){ctx.save();ctx.setLineDash([8,6]);ctx.lineWidth=2;current().suggestions.forEach(s=>{let [c,x,y,w,h]=s.box,l=(x-w/2)*canvas.width,t=(y-h/2)*canvas.height;ctx.strokeStyle='#e879f9';ctx.strokeRect(l,t,w*canvas.width,h*canvas.height);ctx.fillStyle='#e879f9';ctx.fillText('ADAY '+data.names[c]+' '+s.confidence.toFixed(2),l+4,Math.max(15,t+16))});ctx.restore();}
+$('boxes').replaceChildren();boxes.forEach((b,i)=>{let button=document.createElement('button');button.textContent=(i+1)+'. '+data.names[b[0]];if(i===selected)button.className='selected';button.onclick=()=>{selected=i;$('cls').value=b[0];render()};$('boxes').append(button)});
+[...$('suggestions').children].forEach((button,i)=>{let suggestion=current().suggestions[i];button.disabled=suggestion.kind==='missing_annotation_candidate'&&boxes.some(box=>box.every((v,j)=>v===suggestion.box[j]));});}
+function resize(){if(!ready)return;let z=$('zoom').value,scale=z==='fit'?Math.min(1,$('stage').clientWidth/image.naturalWidth):Number(z);canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));render();}
+function load(i){if(busy)return false;if(dirty&&!confirm('Kaydedilmeyen kutu değişiklikleri var. Görüntü değiştirilsin mi?'))return false;index=i;ready=false;dirty=false;boxes=structuredClone(current().boxes);history=[];selected=-1;
+document.querySelectorAll('.class-check').forEach(c=>c.checked=false);$('resolved').checked=false;$('message').textContent='';$('filename').textContent=current().image;
+$('suggestions').replaceChildren();current().suggestions.forEach(s=>{let b=document.createElement('button'),missing=s.kind==='missing_annotation_candidate';b.textContent=(missing?'Adayı ekle: ':'Yakın kutuyu seç: ')+data.names[s.box[0]]+' ('+s.confidence.toFixed(2)+')';b.onclick=()=>{if(!ready)return;if(missing){remember();boxes.push(structuredClone(s.box));selected=boxes.length-1;}else{selected=-1;let best=0;boxes.forEach((box,i)=>{let score=overlap(box,s.box);if(score>best){best=score;selected=i;}});if(selected>=0){$('cls').value=boxes[selected][0];$('mode').value='select';}$('message').textContent='Bu aday yeni kutu olarak eklenmedi. Mevcut kutu ve sınıfı görüntüde kontrol edin.';}render()};$('suggestions').append(b)});
+$('finding').textContent=current().finding||'Durum: '+current().status;$('counter').textContent=(filtered.indexOf(index)+1)+' / '+filtered.length;image.src=current().image;eligibility();return true;}
+image.onload=()=>{ready=true;resize();eligibility()};image.onerror=()=>{$('message').textContent='Görüntü açılamadı; dosya konumunu kontrol edin.';ready=false;eligibility()};
+canvas.onpointerdown=e=>{if(!ready)return;const [x,y]=point(e);if($('mode').value==='draw'){start=[x,y];canvas.setPointerCapture(e.pointerId)}else{selected=-1;let area=Infinity;boxes.forEach((b,i)=>{if(x>=b[1]-b[3]/2&&x<=b[1]+b[3]/2&&y>=b[2]-b[4]/2&&y<=b[2]+b[4]/2&&b[3]*b[4]<area){selected=i;area=b[3]*b[4]}});if(selected>=0)$('cls').value=boxes[selected][0];render()}};
+canvas.onpointermove=e=>{if(!start)return;render();let [x,y]=point(e);ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.strokeRect(start[0]*canvas.width,start[1]*canvas.height,(x-start[0])*canvas.width,(y-start[1])*canvas.height)};
+canvas.onpointerup=e=>{if(!start)return;let [x,y]=point(e),w=Math.abs(x-start[0]),h=Math.abs(y-start[1]);if(w*h*image.naturalWidth*image.naturalHeight>16){remember();boxes.push([Number($('cls').value),(x+start[0])/2,(y+start[1])/2,w,h]);selected=boxes.length-1}else $('message').textContent='Kutu 16 pikselden büyük olmalı.';start=null;render()};canvas.onpointercancel=()=>{start=null;render()};
+$('cls').onchange=()=>{if(selected>=0&&$('mode').value==='select'){remember();boxes[selected][0]=Number($('cls').value);render()}};
+$('remove').onclick=()=>{if(selected>=0){remember();boxes.splice(selected,1);selected=-1;render()}};
+$('undo').onclick=()=>{if(history.length){boxes=history.pop();selected=-1;dirty=true;render()}};
+$('prev').onclick=()=>{let p=filtered.indexOf(index);if(p>0)load(filtered[p-1])};$('next').onclick=()=>{let p=filtered.indexOf(index);if(p<filtered.length-1)load(filtered[p+1])};
+$('queue').onchange=()=>{let previous=filtered;let next=data.items.map((_,i)=>i).filter(i=>$('queue').value==='all'||data.items[i].status===$('queue').value);if(!next.length){$('message').textContent='Bu grupta görüntü yok.';$('queue').value='all';return}filtered=next;if(!load(next[0]))filtered=previous};
+$('zoom').onchange=resize;$('reviewer').oninput=eligibility;$('session').oninput=eligibility;$('resolved').onchange=eligibility;
+$('showSuggestions').onchange=render;
+function payload(){return {...current(),names:data.names,boxes:structuredClone(boxes),reviewer:$('reviewer').value.trim(),session:$('session').value.trim(),all_target_objects_checked:[...document.querySelectorAll('.class-check')].every(c=>c.checked),finding_resolved:$('resolved').checked};}
+async function save(action){if(!api||busy||!ready)return;let request=payload();if(action==='approve'){eligibility();if($('approve').disabled)return;}if(action==='restore'&&!confirm('Son kaydı geri almak mevcut kutuları değiştirir ve inceleme onayını kaldırır. Devam edilsin mi?'))return;
+busy=true;document.querySelectorAll('button,select,input').forEach(e=>e.disabled=true);$('message').textContent='Kaydediliyor…';
+try{let response=await fetch('/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Review-Token':api.token},body:JSON.stringify(request)}),result=await response.json();if(!response.ok)throw new Error(result.error||'Kaydetme başarısız');let oldHash=current().label_sha256;Object.assign(current(),result);if(oldHash!==result.label_sha256)current().suggestions=[];boxes=structuredClone(result.boxes);dirty=false;history=[];selected=-1;$('finding').textContent=result.finding||'Durum: '+result.status;$('suggestions').replaceChildren();current().suggestions=[];document.querySelectorAll('.class-check').forEach(c=>c.checked=false);$('resolved').checked=false;$('progress').textContent='Onay kaydı: '+result.progress.approved+' / '+result.progress.total;$('message').textContent=action==='approve'?'İnceleme onayı kaydedildi.':action==='restore'?'Önceki etiketler geri yüklendi; yeniden inceleme gerekiyor.':'Taslak kaydedildi; görüntü onaylanmadı.';render();}
+catch(error){$('message').textContent=error.message;}
+finally{busy=false;document.querySelectorAll('button,select,input').forEach(e=>e.disabled=false);eligibility();render();}}
+$('draft').onclick=()=>save('draft');$('restore').onclick=()=>save('restore');
+$('approve').onclick=()=>{eligibility();if($('approve').disabled)return;if(api){save('approve');return;}let request=payload();
+let url=URL.createObjectURL(new Blob([JSON.stringify(request,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=current().image.split('/').pop()+'.review.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);dirty=false;$('message').textContent='JSON indirildi. İçe aktarma komutuyla uygulanır.'};
+if(api){$('approve').textContent='İncelemeyi onayla ve kaydet';$('saveHelp').textContent='Taslak kaydetme eğitim onayı vermez. Onay için her hedef sınıfın görüntüde kontrol edilmesi gerekir. Aynı sahnenin karelerinde aynı oturum kimliğini kullanın.';}
+$('progress').textContent='Onay kaydı: '+data.items.filter(i=>i.status==='approved').length+' / '+data.items.length;
+window.addEventListener('beforeunload',e=>{if(dirty||busy){e.preventDefault();e.returnValue=''}});window.addEventListener('resize',resize);if(data.items.length)load(0);
+</script></html>

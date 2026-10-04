@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package surveillance.v1;
+
+// One tracked person in one camera frame (edge node -> fusion engine).
+// Fields 1-7 follow the Phase 7 specification; 8+ are backwards-compatible additions.
+message DetectionEvent {
+  string camera_id = 1;
+  int64 timestamp_ns = 2;
+  uint64 local_track_id = 3;
+
+  message BoundingBox {
+    float x_min = 1;
+    float y_min = 2;
+    float x_max = 3;
+    float y_max = 4;
+    float confidence = 5;
+  }
+  BoundingBox bbox = 4;
+
+  message GeoPoint {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+  }
+  GeoPoint world_coordinates = 5;
+
+  repeated float reid_embedding = 6;   // 512-d, L2-normalised; empty when no key-crop this frame
+  bool is_occluded = 7;
+
+  repeated float world_covariance = 8; // [xx, xy, yy] in m^2 (homography uncertainty propagation)
+  bool world_valid = 9;                // false when the foot point is above the ground-plane horizon
+  uint32 class_id = 10;
+}
+
+// All observations of one processed frame. Batching per frame keeps message rate at the
+// camera's inference rate instead of rate x persons, and carries track terminations.
+message FrameBatch {
+  string camera_id = 1;
+  int64 timestamp_ns = 2;
+  uint64 sequence = 3;
+  repeated DetectionEvent detections = 4;
+  repeated uint64 ended_track_ids = 5;
+}
+
+// Rule-engine alarm raised on an edge node (tripwire, intrusion, loitering).
+message SecurityAlert {
+  string camera_id = 1;
+  int64 timestamp_ns = 2;
+  uint64 local_track_id = 3;
+  string kind = 4;
+  string rule = 5;
+  string direction = 6;
+  float dwell_s = 7;
+}
