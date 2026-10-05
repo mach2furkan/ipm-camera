@@ -27,6 +27,18 @@ def test_valid_dataset_counts(tmp_path):
     assert report['train'] == dict(images=11, boxes=[1]*10, negatives=1)
 
 
+def test_candidate_can_lack_negatives_without_weakening_default_checks(tmp_path):
+    config = fixture_dataset(tmp_path)
+    (tmp_path / 'images/train/10.png').unlink()
+    (tmp_path / 'labels/train/10.txt').unlink()
+    with pytest.raises(ValueError, match='hard negatives'):
+        validate_dataset(config)
+    assert validate_dataset(config, require_negatives=False)['train']['negatives'] == 0
+    (tmp_path / 'labels/train/0.txt').unlink()
+    with pytest.raises(ValueError, match='Missing annotation'):
+        validate_dataset(config, require_negatives=False)
+
+
 def test_missing_labels_are_not_negatives(tmp_path):
     config = fixture_dataset(tmp_path)
     (tmp_path / 'labels/train/10.txt').unlink()

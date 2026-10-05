@@ -1,0 +1,31 @@
+{
+  "status": "requested_weights_missing",
+  "requested_path": "C:\\Users\\Mach2\\Documents\\GitHub\\ipm camera\\cctv_desk_project\\yolo11m_cctv_run\\weights\\best.pt",
+  "requested_exists": false,
+  "expected_names": [
+    "insan",
+    "kitap",
+    "dizustu_bilgisayar",
+    "monitor",
+    "klavye",
+    "fare",
+    "telefon",
+    "bardak",
+    "sise",
+    "kalem"
+  ],
+  "installed_ultralytics": "8.4.172",
+  "other_candidate": {
+    "path": "C:\\Users\\Mach2\\Documents\\GitHub\\ipm camera\\cctv_desk_project\\world_candidates\\world_from_current_20261004_231855\\weights\\best.pt",
+    "size_bytes": 57235760,
+    "sha256": "9c120c76da3db04c6d2261a2bba6f945067ef03b5d8c17a538532e4a1dcda512",
+    "archive_crc_valid": true,
+    "model_type": "WorldModel",
+    "class_count": 80,
+    "class_order_matches": false,
+    "camera_acceptance": "unverified"
+  },
+  "sha256_reference_provided": false,
+  "usage_and_distribution_permission": "not_verified",
+  "current_model_changed": false
+}

@@ -30,7 +30,7 @@ def validate_model_classes(names):
         raise ValueError('Model class names/order changed during training or export')
 
 
-def validate_dataset(config, *, require_review=False):
+def validate_dataset(config, *, require_review=False, require_negatives=True):
     cfg = yaml.safe_load(config.read_text(encoding='utf-8'))
     names = cfg['names']
     if isinstance(names, dict) and set(names) != set(range(10)):
@@ -112,7 +112,7 @@ def validate_dataset(config, *, require_review=False):
         orphan_labels = {p.resolve() for p in (root / 'labels' / split).rglob('*.txt')} - expected_labels
         if orphan_labels:
             raise ValueError(f'Orphan annotation without image: {sorted(map(str, orphan_labels))[0]}')
-        if min(classes) == 0 or negatives == 0:
+        if min(classes) == 0 or (require_negatives and negatives == 0):
             raise ValueError(f'{split} must contain all ten classes and explicit hard negatives: {classes}, {negatives}')
         counts[split] = dict(images=len(images), boxes=classes, negatives=negatives)
     return counts
