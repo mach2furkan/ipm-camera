@@ -1,0 +1,18 @@
+{
+  "gpu": "NVIDIA GeForce RTX 5060 Laptop GPU",
+  "input": "synthetic 2560x1440 black frame",
+  "model": "yolov8m-worldv2.pt",
+  "imgsz": 1280,
+  "samples_per_mode": 12,
+  "rect": {
+    "False": {
+      "median_ms": 42.31029993388802,
+      "p95_ms": 61.105350020807236
+    },
+    "True": {
+      "median_ms": 26.934899971820414,
+      "p95_ms": 42.83883002353832
+    }
+  },
+  "scope": "prediction wall time incl CPU preprocessing; excludes RTSP, decode, UI; not accuracy validation"
+}

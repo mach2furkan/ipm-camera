@@ -19,11 +19,14 @@ class CameraSelection:
     onvif_port: int = 80
     compatible: bool = False
     custom_path: str = ""
+    thermal_channel: int | None = None
+    thermal_path: str = ""
 
 
 def selection_from_fields(host: str, username: str, password: str, port: str,
                           channel: str, path: str, stream: str, traffic: bool,
-                          brand="Hikvision", onvif_port="80", compatible=False) -> CameraSelection:
+                          brand="Hikvision", onvif_port="80", compatible=False,
+                          thermal_channel="", thermal_path="") -> CameraSelection:
     host = host.strip().strip("[]")
     try:
         ipaddress.ip_address(host)
@@ -59,13 +62,27 @@ def selection_from_fields(host: str, username: str, password: str, port: str,
         path = common_paths(brand, channel_n, stream)[0]
     if not path and brand == "Özel RTSP":
         raise ValueError("Kameranın özel RTSP yayın yolunu girin.")
+    thermal_n = None
+    if str(thermal_channel).strip():
+        try:
+            thermal_n = int(thermal_channel)
+        except ValueError:
+            raise ValueError('Termal kanal sayı olmalıdır.') from None
+        if not 1 <= thermal_n <= 999:
+            raise ValueError('Termal kanal 1–999 arasında olmalıdır.')
+        secondary = selection_from_fields(host, username, password, port, str(thermal_n),
+            thermal_path, stream, False, brand, onvif_port, compatible)
+        if secondary.camera.rtsp_path == (path or None) and thermal_n == channel_n:
+            raise ValueError('Optik ve termal için farklı kanal veya farklı yayın yolu seçin.')
     return CameraSelection(CameraConfig(host, username.strip(), password,
-        channel=channel_n, rtsp_port=port_n, rtsp_path=path or None), stream, traffic, brand, onvif_n, compatible, custom_path)
+        channel=channel_n, rtsp_port=port_n, rtsp_path=path or None), stream, traffic, brand, onvif_n, compatible, custom_path,
+        thermal_n, thermal_path.strip())
 
 
 class ConnectionForm:
     def __init__(self, root, *, host="192.168.1.64", username="admin", stream="main",
-                 port=554, channel=1, path="", traffic=False, brand="Otomatik", onvif_port=80, compatible=False):
+                 port=554, channel=1, path="", traffic=False, brand="Otomatik", onvif_port=80, compatible=False,
+                 thermal_channel="", thermal_path=""):
         import tkinter as tk
         from tkinter import ttk, messagebox
         self.result = None
@@ -79,7 +96,7 @@ class ConnectionForm:
         self.fields = {}
         entries = [("host", "Kamera IP / ağ adı", host), ("username", "Kullanıcı adı", username),
                    ("password", "Şifre", ""), ("port", "RTSP portu", str(port)),
-                   ("channel", "Kanal", str(channel)), ("path", "Özel RTSP yolu (isteğe bağlı)", path)]
+                   ("channel", "Optik / ana kanal", str(channel)), ("path", "Optik RTSP yolu (isteğe bağlı)", path)]
         for row, (key, label, value) in enumerate(entries, 1):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", padx=(0, 18), pady=6)
             var = tk.StringVar(value=value)
@@ -108,7 +125,7 @@ class ConnectionForm:
         ttk.Label(panel, text="9 nesne sınıfı aktif; kalem/kurşun kalem kapalı. Trafik ek GPU gücü kullanır.\n"
                   "Otomatik: Dahua/Hikvision yolları, ardından ONVIF yayını aranır.\n"
                   "Özel yayın yolu girilirse marka yolunun yerine kullanılır.\n"
-                  "Şifre kaydedilmez. Her uygulama penceresi bir kameraya bağlanır.",
+                  "Şifre kaydedilmez. Termal kanal boşsa yalnız ana görüntü açılır.",
                   foreground="#555555").grid(row=12, column=0, columnspan=2, sticky="w", pady=8)
         self.status = tk.StringVar(value="Bağlanmadan önce görüntü kontrol edilir.")
         ttk.Label(panel, textvariable=self.status, wraplength=460).grid(row=13, column=0, columnspan=2, sticky="w", pady=8)
@@ -169,6 +186,16 @@ class ConnectionForm:
         self.button = ttk.Button(panel, text="Bağlantıyı kontrol et ve başlat", command=connect)
         self.button.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(panel, text="İptal / kapat", command=cancel).grid(row=15, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        for widget in panel.grid_slaves():
+            row = int(widget.grid_info()['row'])
+            if row >= 12:
+                widget.grid_configure(row=row+2)
+        for key, label, value, row in [('thermal_channel', 'Termal kanal (isteğe bağlı)', thermal_channel or '', 12),
+                ('thermal_path', 'Termal RTSP yolu (isteğe bağlı)', thermal_path, 13)]:
+            ttk.Label(panel, text=label).grid(row=row, column=0, sticky='w', pady=6)
+            var = tk.StringVar(value=str(value))
+            ttk.Entry(panel, textvariable=var).grid(row=row, column=1, sticky='ew', pady=6)
+            self.fields[key] = var
         root.bind("<Return>", lambda _: connect())
         root.bind("<Escape>", lambda _: cancel())
 

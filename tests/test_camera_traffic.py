@@ -118,7 +118,9 @@ def test_line_edit_and_resolution_change():
 
 
 @pytest.mark.parametrize("exit_key,expected", [(ord("q"), 0), (ord("c"), 75)])
-def test_live_loop_uses_raw_frames_separate_vocabulary_and_closes_resources(monkeypatch, exit_key, expected):
+@pytest.mark.parametrize('dual', [False, True])
+@pytest.mark.parametrize('square', [False, True])
+def test_live_loop_uses_raw_frames_separate_vocabulary_and_closes_resources(monkeypatch, exit_key, expected, dual, square):
     import torch
     import ultralytics
     from tools import live_detect
@@ -140,10 +142,12 @@ def test_live_loop_uses_raw_frames_separate_vocabulary_and_closes_resources(monk
         def __init__(self, path):
             self.prompts = None
             self.frames = []
+            self.options = []
             models.append(self)
         def set_classes(self, prompts):
             self.prompts = list(prompts)
         def predict(self, frame, **kwargs):
+            self.options.append(kwargs)
             self.frames.append(frame.copy())
             if self.prompts == list(VEHICLE_PROMPTS):
                 y = (25, 30, 40, 60)[len(self.frames)-1]
@@ -160,6 +164,7 @@ def test_live_loop_uses_raw_frames_separate_vocabulary_and_closes_resources(monk
         generation = 1
         def __init__(self, camera, *args, **kwargs):
             self.n = 0
+            self.camera = camera
             readers.append(self)
         def wait_frame(self, *args, **kwargs):
             self.n += 1
@@ -182,13 +187,24 @@ def test_live_loop_uses_raw_frames_separate_vocabulary_and_closes_resources(monk
     monkeypatch.setattr(live_detect.cv2, "waitKey", lambda _: next(keys))
     monkeypatch.setattr(live_detect.cv2, "getWindowProperty", lambda *args: 1)
     monkeypatch.setenv("HIK_PASS", "local-test-only")
-    assert live_detect.main(["--ip", "192.168.1.64", "--brand", "hikvision", "--windowed", "--traffic"]) == expected
+    argv = ["--ip", "192.168.1.64", "--brand", "hikvision", "--windowed", "--traffic"]
+    if dual:
+        argv += ['--thermal-channel', '2']
+    if square:
+        argv += ['--square-inference']
+    assert live_detect.main(argv) == expected
     assert len(models) == 2
     assert models[0].prompts == [c[0] for c in CLASSES]
     assert models[1].prompts == list(VEHICLE_PROMPTS)
     assert all(not frame.any() for model in models for frame in model.frames)
+    assert all(options['rect'] is (not square) for model in models for options in model.options)
     assert len(models[0].frames) == len(models[1].frames) == 4
     assert watchdogs[0].started and watchdogs[0].stopped
+    assert len(watchdogs) == (2 if dual else 1)
+    if dual:
+        assert readers[1].camera.channel == 2
+        assert readers[0].camera.rtsp_url(StreamRole.MAIN) != readers[1].camera.rtsp_url(StreamRole.MAIN)
+        assert watchdogs[1].started and watchdogs[1].stopped
     assert overlays[0].counter.counts.sum() == 1
     # Frame latency is already sampled after inference: do not add inference twice.
     assert windows[1].summary().p50 == 0

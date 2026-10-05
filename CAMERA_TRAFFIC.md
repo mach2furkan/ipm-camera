@@ -61,9 +61,33 @@ Kimlik parçalanması, örtüşme ve uzun kopmalar sayım hatasına neden olabil
 şifre tekrar girilir ve diske kaydedilmez. Bağlantı kontrolünde `İptal / kapat` devam eden yol aramasını durdurur;
 devam eden tek ağ isteği kendi zaman aşımına kadar sürebilir. Başlatma hatalarında yeniden deneme seçeneği sunulur.
 
+## Optik / termal operatör ekranı
+
+Bağlantı formunda ana/optik kanal ile isteğe bağlı termal kanal ayrı seçilir.
+Termal kanal doldurulunca iki RTSP video yayını bağımsız yeniden bağlantıyla yan yana gösterilir.
+Üstteki Optik / Çift görüntü / Termal düğmeleri görünümü değiştirir; en-boy oranı korunur.
+Sağdaki sürekli görünür PTZ yönleri, DUR, optik zoom ve hız düğmeleri doğrudan kontrol sağlar.
+PTZ ayarlarından kontrol protokolü, web portu ve kanal değiştirilebilir.
+Bir saniyeden uzun süredir yeni termal kare yoksa eski kare kaldırılır ve bekleme durumu gösterilir.
+Trafik analizi optik/ana yayında yapılır; termal görüntüde sıcaklık ölçümü veya radyometrik analiz yapılmaz.
+Kanal numaraları modele bağlıdır; termal görüntü otomatik olarak başka kanaldan varsayılmaz.
+Komut satırı: `python -m tools.camera_app --thermal-channel 2` (modelin gerçek kanalını kullanın).
+
+### Akıcılık ve analiz
+
+Optik önizleme analizden bağımsız olarak en fazla 30 Hz yenilenir; yalnız en yeni kare tutulur.
+Model meşgulken optik ve termal video yenilenmeye devam eder, PTZ ve çıkış kontrolleri işlenir.
+Analiz sonuçları kendi kareleriyle eşleştirilir: daha yeni video gösterilmişse eski analiz karesiyle
+görüntü geri sarılmaz ve eski kutular yeni kareye çizilmez. Analiz hızı ve nesne özeti altta gösterilir.
+Bir saniye boyunca yeni optik kare alınmazsa eski önizleme kaldırılır.
+YOLO-World varsayılan olarak en-boy oranına uygun minimum dolgu ile çalışır; görüntü kırpılmaz.
+Eski kare dolgusunu kullanmak için `--square-inference` verilebilir; sabit sınıflı modelin dolgu düzeni korunur.
+Aynı video karesi yeniden çizilirken ölçeklenmiş görüntü önbellekten kullanılır; yeni kare ve görünüm değişimi önbelleği yeniler.
+
 ## Manuel PTZ ve optik zoom
 
-`P` tuşu mevcut arayüzü değiştirmeden ayrı, standart bir kontrol paneli açar. Sol/sağ/yukarı/aşağı,
+Sağdaki `PTZ ayarları` düğmesi veya `P` tuşu ayrı bir kontrol paneli açar.
+Panel görüntü penceresinin üstünde görünür. Sol/sağ/yukarı/aşağı,
 yakınlaştır/uzaklaştır, hız, web portu ve kontrol kanalı bulunur. Otomatik hedef izleme eklenmemiştir.
 Hikvision'da ISAPI continuous komutları, Dahua'da CGI start/stop kullanılır. Panelden protokol değiştirilebilir.
 ISAPI kanal numarası 1, Dahua PTZ kanal indeksi 0 ile başlar; RTSP yayın kanalı değiştirilmez.

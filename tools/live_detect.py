@@ -31,7 +31,7 @@ from ipcam import CameraConfig, DecoderOptions, HWAccel, RTSPStreamReader, Strea
 from ipcam.analytics import ByteTrackConfig, ByteTracker  # noqa: E402
 from ipcam.metrics import RateMeter, RollingWindow  # noqa: E402
 from ipcam.vision.desk import NAMES, prepare_detections  # noqa: E402
-from tools.live_runtime import ResponsiveInference, InferenceCancelled, box_arrays  # noqa: E402
+from tools.live_runtime import ResponsiveInference, InferenceCancelled, LatestPreview, box_arrays  # noqa: E402
 
 # (prompt for the open-vocabulary model, Turkish label, per-class confidence floor, BGR colour)
 CLASSES: list[tuple[str, str, float, tuple[int, int, int]]] = [
@@ -104,6 +104,8 @@ def main(argv=None, connection_defaults=None) -> int:
     ap.add_argument("--setup", action="store_true", help="Open IP, username and password form")
     ap.add_argument("--rtsp-port", type=int, default=554)
     ap.add_argument("--channel", type=int, default=1)
+    ap.add_argument('--thermal-channel', type=int, default=None, help='Optional second video channel for thermal view')
+    ap.add_argument('--thermal-path', default='', help='Explicit thermal RTSP video path')
     ap.add_argument("--rtsp-path", default="", help="Custom /path for non-Hikvision cameras")
     ap.add_argument("--traffic", action="store_true", help="Independent vehicle detection and line counting")
     ap.add_argument("--brand", choices=["auto", "dahua", "hikvision", "onvif", "custom"], default="auto")
@@ -112,10 +114,13 @@ def main(argv=None, connection_defaults=None) -> int:
     ap.add_argument("--model", default="yolov8m-worldv2.pt")
     ap.add_argument("--closed-model", action="store_true", help="fixed ten-class trained .pt or .engine")
     ap.add_argument("--imgsz", type=int, default=1280)
+    ap.add_argument('--square-inference', action='store_true', help='Use full square padding instead of efficient rectangular inference')
     ap.add_argument("--conf-scale", type=float, default=1.0, help="multiplies every per-class threshold")
     ap.add_argument("--windowed", action="store_true")
     ap.add_argument("--max-age-ms", type=float, default=250, help="Reject frames older than this before inference")
     args = ap.parse_args(argv)
+    if args.imgsz < 32:
+        ap.error('--imgsz must be at least 32')
     if args.max_age_ms <= 0 or not np.isfinite(args.max_age_ms):
         ap.error('--max-age-ms must be finite and positive')
     if not .3 <= args.conf_scale <= 3:
@@ -129,6 +134,7 @@ def main(argv=None, connection_defaults=None) -> int:
                         port=args.rtsp_port, channel=args.channel, path=args.rtsp_path,
                         traffic=args.traffic, brand=brands[args.brand], onvif_port=args.onvif_port,
                         compatible=args.software_decode)
+        defaults.update(thermal_channel=args.thermal_channel or '', thermal_path=args.thermal_path)
         if connection_defaults:
             defaults.update(connection_defaults)
         selection = ask_camera(**defaults)
@@ -137,11 +143,12 @@ def main(argv=None, connection_defaults=None) -> int:
         cam = selection.camera
         args.stream, args.traffic = selection.stream, selection.traffic
         args.software_decode = selection.compatible
+        args.thermal_channel, args.thermal_path = selection.thermal_channel, selection.thermal_path
         if connection_defaults is not None:
             connection_defaults.update(host=cam.host, username=cam.username, stream=args.stream,
                 port=cam.rtsp_port, channel=cam.channel, brand=selection.brand,
                 path=selection.custom_path, traffic=args.traffic, onvif_port=selection.onvif_port,
-                compatible=args.software_decode)
+                compatible=args.software_decode, thermal_channel=args.thermal_channel or '', thermal_path=args.thermal_path)
     elif not password:
         import tkinter as tk
         from tkinter import simpledialog
@@ -202,6 +209,25 @@ def main(argv=None, connection_defaults=None) -> int:
         hwaccel=HWAccel.NONE if args.software_decode else HWAccel.AUTO), stall_timeout_s=3.0))
     reader = RTSPStreamReader(cam, role, decode=True)
     watchdog = StreamWatchdog(reader)
+    thermal_reader = thermal_watchdog = None
+    if args.thermal_channel is not None:
+        from tools.camera_setup import selection_from_fields
+        thermal_brand = selection.brand if args.setup else brands[args.brand]
+        if thermal_brand in ('Otomatik', 'ONVIF'):
+            if (cam.rtsp_path or '').startswith('/cam/realmonitor'):
+                thermal_brand = 'Dahua'
+            elif (cam.rtsp_path or '').startswith('/Streaming/Channels') or cam.rtsp_path is None:
+                thermal_brand = 'Hikvision'
+            elif not args.thermal_path:
+                raise ValueError('Bu kamera için termal RTSP yolunu ayrıca girin.')
+        thermal_cam = selection_from_fields(cam.host, cam.username, cam.password, str(cam.rtsp_port),
+            str(args.thermal_channel), args.thermal_path, args.stream, False,
+            brand=thermal_brand).camera
+        if thermal_cam.rtsp_url(role) == cam.rtsp_url(role):
+            raise ValueError('Optik ve termal yayın aynı olamaz; farklı kanal veya RTSP yolu seçin.')
+        thermal_cam = thermal_cam.with_profile(role, cam.profile(role))
+        thermal_reader = RTSPStreamReader(thermal_cam, role, decode=True)
+        thermal_watchdog = StreamWatchdog(thermal_reader)
 
     minimum_floor = (.30 if args.closed_model else min(c[2] for c in CLASSES))*.3
     tracker = ByteTracker(ByteTrackConfig(high_thresh=minimum_floor, low_thresh=minimum_floor/2,
@@ -210,8 +236,6 @@ def main(argv=None, connection_defaults=None) -> int:
                                           class_aware=True, mahalanobis_gate=None))
     win = "Canli tespit"   # ASCII: HighGUI window titles are not Unicode-safe on Windows
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-    if traffic_overlay is not None:
-        cv2.setMouseCallback(win, traffic_overlay.click)
     fullscreen = not args.windowed
     if fullscreen:
         cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
@@ -240,9 +264,35 @@ def main(argv=None, connection_defaults=None) -> int:
     waiting_painter = LabelPainter(16)
     from tools.ptz_panel import PTZPanel
     ptz_panel = PTZPanel(cam)
+    from tools.camera_dashboard import CameraDashboard
+    dashboard = CameraDashboard(ptz_panel, LabelPainter(16), cam.host, args.thermal_channel, cam.channel, traffic_overlay)
+    cv2.setMouseCallback(win, dashboard.click)
+    thermal_seq = 0
+    thermal_frame = None
+    thermal_seen_at = 0.
+    thermal_generation = thermal_reader.generation if thermal_reader else None
+    display_frame = None
+    def show_dashboard(optical, optical_live=True):
+        nonlocal thermal_seq, thermal_frame, thermal_seen_at, thermal_generation, display_frame
+        if thermal_reader is not None:
+            if thermal_reader.generation != thermal_generation:
+                thermal_frame = None
+                thermal_generation = thermal_reader.generation
+            result = thermal_reader.wait_frame(thermal_seq, timeout=0, max_age_ms=1000)
+            if result is not None:
+                thermal_seq = result.seq
+                thermal_frame = result.image
+                if not isinstance(thermal_frame, np.ndarray):
+                    thermal_frame = thermal_frame.permute(1, 2, 0).cpu().numpy()[:, :, ::-1].copy()
+                thermal_seen_at = time.perf_counter()
+            if time.perf_counter()-thermal_seen_at > 1:
+                thermal_frame = None
+        display_frame = dashboard.render(optical, thermal_frame, optical_live, thermal_frame is not None)
+        cv2.imshow(win, display_frame)
     ptz_was_moving = False
     ptz_motion_token = None
     inference = ResponsiveInference()
+    live_preview = LatestPreview()
     pending_keys = deque(maxlen=32)
     last_hud_time = -float("inf")
     hud = ""
@@ -252,9 +302,14 @@ def main(argv=None, connection_defaults=None) -> int:
     def pump_controls():
         nonlocal reconfigure
         ptz_panel.pump()
+        if live_preview.poll(reader):
+            show_dashboard(live_preview.image, live_preview.image is not None)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("p"):
             ptz_panel.show()
+            return True
+        if key == ord(' '):
+            dashboard.stop()
             return True
         if key == ord("c"):
             reconfigure = True
@@ -273,6 +328,8 @@ def main(argv=None, connection_defaults=None) -> int:
     print(f"bağlanıyor: {cam.redacted_rtsp_url(role)}  model: {args.model} ({'GPU' if half else 'CPU'})")
     try:
         watchdog.start()
+        if thermal_watchdog is not None:
+            thermal_watchdog.start()
         while True:
             generation_at_read = reader.generation
             res = reader.wait_frame(seq, timeout=.03, max_age_ms=args.max_age_ms)
@@ -281,11 +338,12 @@ def main(argv=None, connection_defaults=None) -> int:
                 # annotated frame briefly instead of flashing the waiting screen.
                 if (last_preview is not None and reader.generation == generation
                         and time.perf_counter()-last_preview_at < .5):
-                    cv2.imshow(win, last_preview)
+                    show_dashboard(last_preview)
                     if not pump_controls():
                         break
                     continue
                 blank = np.zeros((540, 960, 3), np.uint8)
+                last_preview = None
                 cv2.putText(blank, "goruntu bekleniyor...", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (180, 180, 180), 2)
                 status = watchdog.stats()
                 waiting_painter.put(blank, f"Kamera: {cam.host}:{cam.rtsp_port} | {status.state.value}",
@@ -294,7 +352,7 @@ def main(argv=None, connection_defaults=None) -> int:
                     waiting_painter.put(blank, f"Bağlantı sorunu: {status.last_failure.value}. IP, şifre ve RTSP yolunu kontrol et.",
                                         30, 355, (24, 24, 24))
                 waiting_painter.put(blank, "C: bağlantı | P: PTZ / zoom | Q/Esc: çıkış", 30, 395, (24, 24, 24))
-                cv2.imshow(win, blank)
+                show_dashboard(blank, False)
                 if not pump_controls():
                     break
                 continue
@@ -306,6 +364,7 @@ def main(argv=None, connection_defaults=None) -> int:
             if reader.generation != generation:
                 reset_tracking()
                 generation = reader.generation
+            live_preview.accept(res, reader.generation)
             frame = res.image
             if not isinstance(frame, np.ndarray):
                 frame = frame.permute(1, 2, 0).cpu().numpy()[:, :, ::-1].copy()
@@ -318,13 +377,15 @@ def main(argv=None, connection_defaults=None) -> int:
                 painter_height = H
 
             t0 = time.perf_counter()
+            if last_preview is None:
+                show_dashboard(live_preview.image)
             def predict_frame():
                 pred = model.predict(frame, imgsz=args.imgsz, conf=float(floors.min() * scale), device=device,
-                                     **precision, verbose=False, rect=False)[0]
+                                     **precision, verbose=False, rect=not args.closed_model and not args.square_inference)[0]
                 vehicle_pred = None
                 if traffic_model is not None:
                     vehicle_pred = traffic_model.predict(frame, imgsz=args.imgsz, conf=.30, device=device,
-                        **precision, verbose=False, rect=False)[0]
+                        **precision, verbose=False, rect=not args.square_inference)[0]
                 return pred, vehicle_pred
             pred, traffic_pred = inference.run(predict_frame, pump_controls)
             if reader.generation != generation:
@@ -382,6 +443,7 @@ def main(argv=None, connection_defaults=None) -> int:
                 hud = (f"{W}x{H}  {fps.rate():4.1f} fps   model {infer_ms.summary().p50:4.0f} ms   "
                        f"gecikme {lat_ms.summary().p50:4.0f} ms   eşik x{scale:.2f}   |   {summary}")
                 last_hud_time = now
+            dashboard.analysis_text = f'Analiz: {fps.rate():.1f} fps • {infer_ms.summary().p50:.0f} ms • {summary}'
             hud_painter.put(frame, hud, 0, 0, (24, 24, 24))
             if traffic_out is not None:
                 for tr in traffic_out.tracks:
@@ -392,10 +454,15 @@ def main(argv=None, connection_defaults=None) -> int:
                 traffic_overlay.draw(frame, hud_painter)
             hud_painter.put(frame, "P: PTZ / zoom | C: bağlantı | F: tam ekran | S: fotoğraf | Q/Esc: çıkış",
                             0, H-32, (24, 24, 24))
-            cv2.imshow(win, frame)
+            # Never rewind live video to an older analyzed frame or put its boxes
+            # on a different frame. Report analysis in the dashboard instead.
+            if live_preview.seq > res.seq or live_preview.image is None:
+                show_dashboard(live_preview.image, live_preview.image is not None)
+            else:
+                show_dashboard(frame)
             ptz_panel.pump()
-            last_preview = frame
-            last_preview_at = time.perf_counter()
+            last_preview = live_preview.image if live_preview.seq > res.seq or live_preview.image is None else frame
+            last_preview_at = live_preview.received_at
             if fullscreen and not applied_fs:   # must be set after the first imshow to take effect
                 cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                 applied_fs = True
@@ -413,7 +480,7 @@ def main(argv=None, connection_defaults=None) -> int:
                                       cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
             elif key == ord("s"):
                 path = f"tespit_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
-                cv2.imwrite(path, frame)
+                cv2.imwrite(path, display_frame)
                 print("kaydedildi:", path)
             elif key in (ord("+"), ord("=")):
                 scale = min(3.0, scale * 1.15)
@@ -429,6 +496,8 @@ def main(argv=None, connection_defaults=None) -> int:
                 break
             elif key == ord("p"):
                 ptz_panel.show()
+            elif key == ord(' '):
+                dashboard.stop()
             if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
                 break
     except (KeyboardInterrupt, InferenceCancelled):
@@ -441,9 +510,13 @@ def main(argv=None, connection_defaults=None) -> int:
                 watchdog.stop()
             finally:
                 try:
-                    ptz_panel.close()
+                    if thermal_watchdog is not None:
+                        thermal_watchdog.stop()
                 finally:
-                    cv2.destroyAllWindows()
+                    try:
+                        ptz_panel.close()
+                    finally:
+                        cv2.destroyAllWindows()
     return 75 if reconfigure else 0
 
 

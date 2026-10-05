@@ -17,9 +17,17 @@ class PTZPanel:
     def show(self):
         if self.root is not None:
             self.root.lift()
+            self.root.focus_force()
             return
         self.closing.clear()
         self._run()
+
+    def pulse(self, direction, speed=30):
+        if self.controller is None:
+            protocol = 'Dahua' if (self.camera.rtsp_path or '').startswith('/cam/realmonitor') else 'ISAPI'
+            channel = self.camera.channel-1 if protocol == 'Dahua' else self.camera.channel
+            self.controller = ManualPTZ(self.camera, protocol, channel)
+        return self.controller.pulse(direction, speed, .25)
 
     def pump(self):
         # Tk and OpenCV windows stay on the main UI thread. HTTP commands run separately.
@@ -54,6 +62,7 @@ class PTZPanel:
         root = tk.Tk()
         self.root = root
         root.title("Kamera • PTZ kontrol")
+        root.attributes("-topmost", True)
         root.resizable(False, False)
         box = ttk.Frame(root, padding=18)
         box.grid()

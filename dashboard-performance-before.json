@@ -1,0 +1,5 @@
+{
+  "median_ms": 9.50780010316521,
+  "p95_ms": 11.307389952708036,
+  "scope": "same-frame dual dashboard render, synthetic 2560x1440 + 640x512"
+}
