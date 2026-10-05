@@ -135,6 +135,7 @@ class CameraConfig:
     )
     # Main stream is consumed on demand; it is stopped this long after the last lease ends.
     main_idle_linger_s: float = 10.0
+    rtsp_path: str | None = None
 
     @property
     def label(self) -> str:
@@ -149,7 +150,7 @@ class CameraConfig:
         Hikvision passwords frequently contain ``@``, ``:`` or ``#``; unescaped they corrupt
         the URL authority and FFmpeg fails with an opaque 401 or "Invalid argument".
         """
-        path = f"/Streaming/Channels/{self.channel}{role.suffix}"
+        path = self.rtsp_path or f"/Streaming/Channels/{self.channel}{role.suffix}"
         host = f"[{self.host}]" if ":" in self.host and not self.host.startswith("[") else self.host
         if with_credentials:
             auth = f"{quote(self.username, safe='')}:{quote(self.password, safe='')}@"

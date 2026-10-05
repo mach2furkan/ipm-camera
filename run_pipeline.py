@@ -125,20 +125,27 @@ def main():
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--benchmark-image', type=Path, help='Representative 2K camera image')
     parser.add_argument('--resume', type=Path, help='Resume an interrupted last.pt checkpoint')
+    parser.add_argument('--train-only', action='store_true', help='Train isolated candidate without export')
+    parser.add_argument('--project', type=Path, default=ROOT / 'cctv_desk_project')
+    parser.add_argument('--name', default='yolo11m_cctv_run')
     args = parser.parse_args()
     args.data = args.data.resolve()
     report = dict(dataset=validate_dataset(args.data, require_review=True))
     print(json.dumps(report, indent=2), flush=True)
     if args.check:
         return
+    from tools.dataset_quality import audit_quality
+    if not audit_quality(args.data)['training_ready']:
+        raise ValueError('Dataset quality review must pass before candidate training')
     import torch
     from ultralytics import YOLO
     from ultralytics.cfg import DEFAULT_CFG_DICT
-    import tensorrt  # Fail before spending hours training if export dependency is missing.
+    if not args.train_only:
+        import tensorrt  # Export dependencies are not required for isolated training.
 
     if not torch.cuda.is_available():
         raise RuntimeError('CUDA GPU required')
-    if importlib.util.find_spec('onnx') is None:
+    if not args.train_only and importlib.util.find_spec('onnx') is None:
         raise RuntimeError('ONNX export dependency missing')
     cfg = yaml.safe_load(args.config.read_text(encoding='utf-8'))
     unknown = set(cfg) - set(DEFAULT_CFG_DICT)
@@ -149,8 +156,8 @@ def main():
     if args.resume:
         model.train(resume=True, device=0)
     else:
-        model.train(data=str(args.data), project=str(ROOT / 'cctv_desk_project'),
-                    name='yolo11m_cctv_run', exist_ok=False, **cfg)
+        model.train(data=str(args.data), project=str(args.project.resolve()),
+                    name=args.name, exist_ok=False, **cfg)
     best = Path(model.trainer.best)
     if not best.exists():
         raise RuntimeError('Training did not produce best.pt')
@@ -168,10 +175,16 @@ def main():
         precision, recall, ap50, ap = metrics.box.class_result(index)
         class_metrics[NAMES[int(class_id)]] = dict(class_id=int(class_id), precision=float(precision),
                                                  recall=float(recall), map50=float(ap50), map50_95=float(ap))
-    report.update(gpu=torch.cuda.get_device_name(0), tensorrt=tensorrt.__version__,
+    report.update(gpu=torch.cuda.get_device_name(0),
                   map50=float(metrics.box.map50), map50_95=float(metrics.box.map),
                   per_class_metrics=class_metrics,
                   train_hours=(time.monotonic() - start) / 3600)
+    if args.train_only:
+        report.update(status='candidate trained; camera acceptance pending', camera_acceptance='unverified')
+        output.write_text(json.dumps(report, indent=2), encoding='utf-8')
+        print(output, flush=True)
+        return
+    report['tensorrt'] = tensorrt.__version__
     engine = trained.export(format='engine', imgsz=cfg['imgsz'], half=True, device=0,
                             batch=1, dynamic=False, nms=True, simplify=True, workspace=2)
     detector = YOLO(engine, task='detect')

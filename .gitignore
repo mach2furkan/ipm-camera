@@ -18,6 +18,7 @@ cctv_desk_project/
 *.onnx
 *.pt
 weights/
+camera-evaluation/
 training*.log
 autonomous_status.json
 camera-app*.log

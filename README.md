@@ -24,6 +24,13 @@ akışını tek bir asenkron arayüz arkasında toplar.
 
 ## Kurulum
 
+### Kamera bağlantı ekranı ve trafik sayımı
+
+Windows'ta `start-camera.cmd` dosyasını açın. Kamera IP'si, kullanıcı adı ve şifreyi
+yerel formda kendiniz girin; trafik seçeneğini açarak araç takibi ve A/B yönlerinde
+çizgi geçiş sayımını kullanın. Orijinal 10 nesne sınıfı ve model ağırlıkları korunur.
+Farklı markaların RTSP yolu ve kullanım ayrıntıları: [CAMERA_TRAFFIC.md](CAMERA_TRAFFIC.md).
+
 ```bash
 uv venv && uv pip install -e ".[dev]"          # çekirdek + testler
 uv pip install -e ".[display]"                 # OpenCV pencereli smoke test

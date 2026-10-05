@@ -19,6 +19,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from collections import OrderedDict, deque
 
 import cv2
 import numpy as np
@@ -30,6 +31,7 @@ from ipcam import CameraConfig, DecoderOptions, HWAccel, RTSPStreamReader, Strea
 from ipcam.analytics import ByteTrackConfig, ByteTracker  # noqa: E402
 from ipcam.metrics import RateMeter, RollingWindow  # noqa: E402
 from ipcam.vision.desk import NAMES, prepare_detections  # noqa: E402
+from tools.live_runtime import ResponsiveInference, InferenceCancelled, box_arrays  # noqa: E402
 
 # (prompt for the open-vocabulary model, Turkish label, per-class confidence floor, BGR colour)
 CLASSES: list[tuple[str, str, float, tuple[int, int, int]]] = [
@@ -61,11 +63,13 @@ class LabelPainter:
                 break
         if self.font is None:
             self.font = ImageFont.load_default()
-        self._cache: dict[tuple[str, tuple[int, int, int]], np.ndarray] = {}
+        self._cache = OrderedDict()
 
     def patch(self, text: str, bg: tuple[int, int, int]) -> np.ndarray:
         key = (text, bg)
         p = self._cache.get(key)
+        if p is not None:
+            self._cache.move_to_end(key)
         if p is None:
             from PIL import Image, ImageDraw
 
@@ -76,9 +80,9 @@ class LabelPainter:
             ImageDraw.Draw(img).text((pad - x0, pad - y0), text, font=self.font,
                                      fill=(20, 20, 20) if lum > 140 else (245, 245, 245))
             p = np.asarray(img)[:, :, ::-1].copy()
-            if len(self._cache) > 512:
-                self._cache.clear()
             self._cache[key] = p
+            if len(self._cache) > 512:
+                self._cache.popitem(last=False)
         return p
 
     def put(self, frame: np.ndarray, text: str, x: int, y: int, bg: tuple[int, int, int]) -> None:
@@ -87,28 +91,50 @@ class LabelPainter:
         H, W = frame.shape[:2]
         x = max(0, min(W - w, x))
         y = max(0, min(H - h, y))
-        frame[y:y + h, x:x + w] = p
+        h, w = min(h, H-y), min(w, W-x)
+        frame[y:y + h, x:x + w] = p[:h, :w]
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Live object detection, full screen")
     ap.add_argument("--ip", default=os.environ.get("HIK_IP", "192.168.1.64"))
     ap.add_argument("--user", default=os.environ.get("HIK_USER", "admin"))
     ap.add_argument("--password", default=None, help="or env HIK_PASS")
     ap.add_argument("--stream", choices=["main", "sub"], default="main")
+    ap.add_argument("--setup", action="store_true", help="Open IP, username and password form")
+    ap.add_argument("--rtsp-port", type=int, default=554)
+    ap.add_argument("--channel", type=int, default=1)
+    ap.add_argument("--rtsp-path", default="", help="Custom /path for non-Hikvision cameras")
+    ap.add_argument("--traffic", action="store_true", help="Independent vehicle detection and line counting")
+    ap.add_argument("--brand", choices=["auto", "dahua", "hikvision", "onvif", "custom"], default="auto")
+    ap.add_argument("--onvif-port", type=int, default=80)
+    ap.add_argument("--software-decode", action="store_true", help="Compatible CPU video decoding; inference stays on GPU")
     ap.add_argument("--model", default="yolov8m-worldv2.pt")
     ap.add_argument("--closed-model", action="store_true", help="fixed ten-class trained .pt or .engine")
     ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--conf-scale", type=float, default=1.0, help="multiplies every per-class threshold")
     ap.add_argument("--windowed", action="store_true")
     ap.add_argument("--max-age-ms", type=float, default=250, help="Reject frames older than this before inference")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.max_age_ms <= 0 or not np.isfinite(args.max_age_ms):
         ap.error('--max-age-ms must be finite and positive')
     if not .3 <= args.conf_scale <= 3:
         ap.error('--conf-scale must be between 0.3 and 3')
+    cam = None
     password = args.password or os.environ.get("HIK_PASS")
-    if not password:
+    brands = dict(auto="Otomatik", dahua="Dahua", hikvision="Hikvision", onvif="ONVIF", custom="Özel RTSP")
+    if args.setup:
+        from tools.camera_setup import ask_camera
+        selection = ask_camera(host=args.ip, username=args.user, stream=args.stream,
+                               port=args.rtsp_port, channel=args.channel, path=args.rtsp_path,
+                               traffic=args.traffic, brand=brands[args.brand], onvif_port=args.onvif_port,
+                               compatible=args.software_decode)
+        if selection is None:
+            return 64
+        cam = selection.camera
+        args.stream, args.traffic = selection.stream, selection.traffic
+        args.software_decode = selection.compatible
+    elif not password:
         import tkinter as tk
         from tkinter import simpledialog
 
@@ -122,6 +148,18 @@ def main() -> int:
             prompt.destroy()
         if not password:
             return 64
+
+    if cam is None:
+        from tools.camera_setup import selection_from_fields
+        try:
+            cam = selection_from_fields(args.ip, args.user, password, str(args.rtsp_port),
+                str(args.channel), args.rtsp_path, args.stream, args.traffic,
+                brand=brands[args.brand], onvif_port=str(args.onvif_port)).camera
+            if args.brand != "hikvision":
+                from ipcam.stream.connect import resolve_camera
+                cam = resolve_camera(cam, args.stream, brands[args.brand], args.onvif_port)
+        except ValueError as exc:
+            ap.error(str(exc))
 
     import torch
     from ultralytics import YOLO, YOLOWorld
@@ -138,12 +176,22 @@ def main() -> int:
             raise ValueError("Model class order does not match CCTV desk taxonomy")
     else:
         model.set_classes([c[0] for c in CLASSES])
+    traffic_model = traffic_tracker = traffic_overlay = None
+    if args.traffic:
+        from ipcam.vision.traffic import VEHICLE_PROMPTS, TrafficOverlay
+        # Never mutate the desk detector vocabulary: it retains its original 11 prompts / 10 classes.
+        traffic_model = YOLOWorld("yolov8m-worldv2.pt")
+        traffic_model.set_classes(list(VEHICLE_PROMPTS))
+        traffic_tracker = ByteTracker(ByteTrackConfig(high_thresh=.3, low_thresh=.15,
+            new_track_thresh=.3, min_hits=3, confirm_first_frame=False, class_aware=True,
+            lost_ttl_s=2.0, fuse_score=False, mahalanobis_gate=None))
+        traffic_overlay = TrafficOverlay()
     half = device == 0
 
     role = StreamRole.MAIN if args.stream == "main" else StreamRole.SUB
-    cam = CameraConfig(args.ip, args.user, password)
     prof = cam.profile(role)
-    cam = cam.with_profile(role, replace(prof, decoder=DecoderOptions(hwaccel=HWAccel.AUTO), stall_timeout_s=3.0))
+    cam = cam.with_profile(role, replace(prof, decoder=DecoderOptions(
+        hwaccel=HWAccel.NONE if args.software_decode else HWAccel.AUTO), stall_timeout_s=3.0))
     reader = RTSPStreamReader(cam, role, decode=True)
     watchdog = StreamWatchdog(reader)
 
@@ -154,6 +202,8 @@ def main() -> int:
                                           class_aware=True, mahalanobis_gate=None))
     win = "Canli tespit"   # ASCII: HighGUI window titles are not Unicode-safe on Windows
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    if traffic_overlay is not None:
+        cv2.setMouseCallback(win, traffic_overlay.click)
     fullscreen = not args.windowed
     if fullscreen:
         cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
@@ -161,6 +211,7 @@ def main() -> int:
         cv2.resizeWindow(win, 1600, 900)
 
     painter: LabelPainter | None = None
+    painter_height = None
     applied_fs = False
     hud_painter: LabelPainter | None = None
     fps = RateMeter(2.0)
@@ -178,26 +229,63 @@ def main() -> int:
         floors = np.array([0.30] * 9 + [0.65])
         class_map = tuple(range(len(NAMES)))
     generation = reader.generation
+    waiting_painter = LabelPainter(16)
+    inference = ResponsiveInference()
+    pending_keys = deque(maxlen=32)
+    last_hud_time = -float("inf")
+    hud = ""
+    last_preview = None
+    last_preview_at = 0.
+    def pump_controls():
+        key = cv2.waitKey(1) & 0xFF
+        if key in (27, ord("q")) or cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
+            return False
+        if key != 255:
+            pending_keys.append(key)
+        return True
+    def reset_tracking():
+        tracker.reset()
+        if traffic_tracker is not None:
+            traffic_tracker.reset()
+            if traffic_overlay.counter is not None:
+                traffic_overlay.counter.reset_tracks()
     print(f"bağlanıyor: {cam.redacted_rtsp_url(role)}  model: {args.model} ({'GPU' if half else 'CPU'})")
     try:
         watchdog.start()
         while True:
             generation_at_read = reader.generation
-            res = reader.wait_frame(seq, timeout=1.0, max_age_ms=args.max_age_ms)
+            res = reader.wait_frame(seq, timeout=.03, max_age_ms=args.max_age_ms)
             if res is None:
+                # A normal inter-frame gap is not a disconnection. Keep the matched
+                # annotated frame briefly instead of flashing the waiting screen.
+                if (last_preview is not None and reader.generation == generation
+                        and time.perf_counter()-last_preview_at < .5):
+                    cv2.imshow(win, last_preview)
+                    if not pump_controls():
+                        break
+                    continue
                 blank = np.zeros((540, 960, 3), np.uint8)
                 cv2.putText(blank, "goruntu bekleniyor...", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (180, 180, 180), 2)
+                status = watchdog.stats()
+                waiting_painter.put(blank, f"Kamera: {cam.host}:{cam.rtsp_port} | {status.state.value}",
+                                    30, 315, (24, 24, 24))
+                if status.last_failure is not None:
+                    waiting_painter.put(blank, f"Bağlantı sorunu: {status.last_failure.value}. IP, şifre ve RTSP yolunu kontrol et.",
+                                        30, 355, (24, 24, 24))
+                waiting_painter.put(blank, "Otomatik yeniden bağlantı açık. Q/Esc: çıkış", 30, 395, (24, 24, 24))
                 cv2.imshow(win, blank)
                 if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
+                    break
+                if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
                     break
                 continue
             seq = res.seq
             if reader.generation != generation_at_read:
-                tracker.reset()
+                reset_tracking()
                 generation = reader.generation
                 continue
             if reader.generation != generation:
-                tracker.reset()
+                reset_tracking()
                 generation = reader.generation
             frame = res.image
             if not isinstance(frame, np.ndarray):
@@ -205,27 +293,43 @@ def main() -> int:
             else:
                 frame = frame.copy()
             H, W = frame.shape[:2]
-            if painter is None:
+            if painter is None or painter_height != H:
                 painter = LabelPainter(max(14, H // 48))
                 hud_painter = LabelPainter(max(13, H // 60))
+                painter_height = H
 
             t0 = time.perf_counter()
-            pred = model.predict(frame, imgsz=args.imgsz, conf=float(floors.min() * scale), device=device,
-                                 **precision, verbose=False, rect=False)[0]
+            def predict_frame():
+                pred = model.predict(frame, imgsz=args.imgsz, conf=float(floors.min() * scale), device=device,
+                                     **precision, verbose=False, rect=False)[0]
+                vehicle_pred = None
+                if traffic_model is not None:
+                    vehicle_pred = traffic_model.predict(frame, imgsz=args.imgsz, conf=.30, device=device,
+                        **precision, verbose=False, rect=False)[0]
+                return pred, vehicle_pred
+            pred, traffic_pred = inference.run(predict_frame, pump_controls)
             if reader.generation != generation:
-                tracker.reset()
+                reset_tracking()
                 generation = reader.generation
                 continue
             infer_ms.add((time.perf_counter() - t0) * 1000)
             b = pred.boxes
             if len(b):
-                xyxy = b.xyxy.cpu().numpy()
-                conf = b.conf.cpu().numpy()
-                cls = b.cls.cpu().numpy()
+                xyxy, conf, cls = box_arrays(b)
                 dets = prepare_detections(xyxy, conf, cls, W, H, floors*scale, class_map)
+                # User disabled the canonical pen class (both pen and pencil aliases).
+                # Keep the detector vocabulary intact so other class scores stay unchanged.
+                dets = dets[dets[:, 5] != NAMES.index("kalem")]
             else:
                 dets = np.zeros((0, 6))
             out = tracker.update(dets, res.frame.arrival_ns / 1e9)
+            traffic_out = None
+            if traffic_pred is not None:
+                from ipcam.vision.traffic import VEHICLE_LABELS, vehicle_detections
+                vb = traffic_pred.boxes
+                vd = vehicle_detections(*box_arrays(vb), W, H)
+                traffic_out = traffic_tracker.update(vd, res.frame.arrival_ns / 1e9)
+                traffic_overlay.update(traffic_out, res.frame.arrival_ns / 1e9, H, W)
 
             counts: dict[str, int] = {}
             thick = max(2, H // 400)
@@ -241,16 +345,34 @@ def main() -> int:
 
             fps.tick()
             lat = res.frame.latency()
-            lat_ms.add(lat.total_ms + (time.perf_counter() - t0) * 1000)
+            # latency() is sampled now: its queue age already includes inference.
+            lat_ms.add(lat.total_ms)
             summary = "   ".join(f"{k}: {v}" for k, v in sorted(counts.items())) or "nesne yok"
-            hud = (f"{W}x{H}  {fps.rate():4.1f} fps   model {infer_ms.summary().p50:4.0f} ms   "
-                   f"gecikme {lat_ms.summary().p50:4.0f} ms   eşik x{scale:.2f}   |   {summary}")
+            now = time.perf_counter()
+            if now - last_hud_time >= .25:
+                hud = (f"{W}x{H}  {fps.rate():4.1f} fps   model {infer_ms.summary().p50:4.0f} ms   "
+                       f"gecikme {lat_ms.summary().p50:4.0f} ms   eşik x{scale:.2f}   |   {summary}")
+                last_hud_time = now
             hud_painter.put(frame, hud, 0, 0, (24, 24, 24))
+            if traffic_out is not None:
+                for tr in traffic_out.tracks:
+                    x1, y1, x2, y2 = (int(v) for v in tr.box)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 230, 255), thick)
+                    painter.put(frame, f"{VEHICLE_LABELS[tr.cls]} T#{tr.track_id} {tr.conf:.2f}",
+                                x1, y1, (32, 80, 80))
+                traffic_overlay.draw(frame, hud_painter)
             cv2.imshow(win, frame)
+            last_preview = frame
+            last_preview_at = time.perf_counter()
             if fullscreen and not applied_fs:   # must be set after the first imshow to take effect
                 cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                 applied_fs = True
-            key = cv2.waitKey(1) & 0xFF
+            current_key = cv2.waitKey(1) & 0xFF
+            if current_key in (27, ord("q")):
+                break
+            if current_key != 255:
+                pending_keys.append(current_key)
+            key = pending_keys.popleft() if pending_keys else 255
             if key in (27, ord("q")):
                 break
             if key == ord("f"):
@@ -265,11 +387,17 @@ def main() -> int:
                 scale = min(3.0, scale * 1.15)
             elif key == ord("-"):
                 scale = max(0.3, scale / 1.15)
+            elif key == ord("l") and traffic_overlay is not None:
+                traffic_overlay.points = []
+            elif key == ord("r") and traffic_overlay is not None:
+                if traffic_overlay.counter is not None:
+                    traffic_overlay.counter.reset_counts()
             if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
                 break
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, InferenceCancelled):
         pass
     finally:
+        inference.close()
         watchdog.stop()
         cv2.destroyAllWindows()
     return 0

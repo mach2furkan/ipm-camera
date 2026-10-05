@@ -2,7 +2,7 @@ model: yolo11m.pt
 epochs: 100
 time: 4.0
 patience: 15
-batch: 0.70
+batch: 0.90
 imgsz: 960
 device: 0
 workers: 4
