@@ -21,6 +21,10 @@ class ConnectionCheckError(ValueError):
     pass
 
 
+class ConnectionCancelled(ConnectionCheckError):
+    pass
+
+
 def common_paths(brand, channel, stream):
     sub = stream == "sub"
     dahua = f"/cam/realmonitor?channel={channel}&subtype={int(sub)}"
@@ -131,7 +135,8 @@ def probe_video(camera, role):
     raise ConnectionCheckError("Bağlantı açıldı ancak çözülebilen görüntü gelmedi.")
 
 
-def resolve_camera(camera, stream, brand="Otomatik", onvif_port=80, probe=probe_video, discover=onvif_candidates):
+def resolve_camera(camera, stream, brand="Otomatik", onvif_port=80, probe=probe_video, discover=onvif_candidates,
+                   progress=None, cancelled=None):
     role = StreamRole(stream)
     if brand not in BRANDS:
         raise ConnectionCheckError("Geçersiz kamera markası.")
@@ -140,11 +145,20 @@ def resolve_camera(camera, stream, brand="Otomatik", onvif_port=80, probe=probe_
     if brand == "Özel RTSP" and not camera.rtsp_path:
         raise ConnectionCheckError("Özel RTSP için kameranın yayın yolunu girin.")
     failures = []
+    def report(message):
+        if cancelled is not None and cancelled.is_set():
+            raise ConnectionCancelled("Bağlantı kontrolü iptal edildi.")
+        if progress is not None:
+            progress(message)
     def try_candidates(items):
         for candidate in items:
+            report(f"RTSP görüntüsü kontrol ediliyor: {candidate.host}:{candidate.rtsp_port}")
             try:
                 probe(candidate, role)
+                report("Görüntü doğrulandı. Algılama hazırlanıyor…")
                 return candidate
+            except ConnectionCancelled:
+                raise
             except Exception as exc:
                 kind = classify_failure(exc)
                 if kind is FailureKind.AUTH:
@@ -156,6 +170,7 @@ def resolve_camera(camera, stream, brand="Otomatik", onvif_port=80, probe=probe_
         return result
     onvif_hint = ""
     if not camera.rtsp_path and brand in ("Otomatik", "ONVIF"):
+        report("ONVIF üzerinden kamera yayın profilleri aranıyor…")
         try:
             discovered = discover(camera, stream, onvif_port)
         except ConnectionCheckError as exc:

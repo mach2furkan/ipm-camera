@@ -57,6 +57,27 @@ Kamera yeniden bağlanınca konum geçmişi silinir, toplamlar tutulur. Çözün
 Kimlik parçalanması, örtüşme ve uzun kopmalar sayım hatasına neden olabilir; sonuçlar doğrulanmış trafik istatistiği değildir.
 
 `F`: tam ekran, `Q/Esc`: çıkış, `S`: görüntü kaydet, `+/-`: masa nesnelerinin güven eşiklerini ayarla.
+`C`: mevcut bağlantıyı kapatıp bağlantı formuna dön. IP, marka, kanal ve özel yol aynı süreçte korunur;
+şifre tekrar girilir ve diske kaydedilmez. Bağlantı kontrolünde `İptal / kapat` devam eden yol aramasını durdurur;
+devam eden tek ağ isteği kendi zaman aşımına kadar sürebilir. Başlatma hatalarında yeniden deneme seçeneği sunulur.
+
+## Manuel PTZ ve optik zoom
+
+`P` tuşu mevcut arayüzü değiştirmeden ayrı, standart bir kontrol paneli açar. Sol/sağ/yukarı/aşağı,
+yakınlaştır/uzaklaştır, hız, web portu ve kontrol kanalı bulunur. Otomatik hedef izleme eklenmemiştir.
+Hikvision'da ISAPI continuous komutları, Dahua'da CGI start/stop kullanılır. Panelden protokol değiştirilebilir.
+ISAPI kanal numarası 1, Dahua PTZ kanal indeksi 0 ile başlar; RTSP yayın kanalı değiştirilmez.
+
+Her tıklama 250 ms hareket isteği yapar, ardından durdurma gönderir. Bir komut sürerken yeni hareketler sıraya alınmaz.
+`DUR` veya panelde boşluk tuşu hareketin durmasını ister; önceki komut bitmişse durdurmayı tekrar gönderir.
+Panel kapatılırken veya kamera değişirken devam eden hareket için durdurma istenir ve kontrol bağlantıları kapatılır.
+Komutun zaman aşımına uğraması, kameranın onu almamış olduğunu garanti etmez; durdurma başarısızlığı panelde belirtilir.
+Panelin açık olması kamerayı hareket ettirmez; yalnız operatör komutları hareket gönderir.
+PTZ komutu devam ederken trafik geçişleri sayılmaz, toplamlar korunur ve sonrasında konum geçmişi yeniden başlatılır.
+Optik zoom, kamera donanımı ve hesap yetkisi tarafından desteklenmelidir; sabit lensli kamerada optik zoom sağlanamaz.
+
+Protokol kaynakları: [Hikvision ISAPI](https://open.hikvision.com/hardware/v2/08%E5%8D%8F%E8%AE%AE%E9%80%8F%E4%BC%A0/%E4%BA%91%E5%8F%B0%E5%92%8C%E8%B7%9F%E9%9A%8F%E5%AE%9A%E4%BD%8D.html),
+[Dahua HTTP API, PTZ bölüm 7.2](https://community.jeedom.com/uploads/short-url/tTQJPaNah7gZnU12VGGN9ZHEhOk.pdf).
 
 Referans: [HodenX/python-traffic-counter-with-yolo-and-sort](https://github.com/HodenX/python-traffic-counter-with-yolo-and-sort).
 Referansın YOLO + takip + çizgi sayımı fikri mevcut YOLO-World/ByteTrack/Tripwire bileşenleriyle bağımsız uygulanmıştır;

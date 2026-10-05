@@ -117,7 +117,8 @@ def test_line_edit_and_resolution_change():
     assert overlay.counter.a == (50, 60) and overlay.counter.b == (350, 160)
 
 
-def test_live_loop_uses_raw_frames_separate_vocabulary_and_closes_resources(monkeypatch):
+@pytest.mark.parametrize("exit_key,expected", [(ord("q"), 0), (ord("c"), 75)])
+def test_live_loop_uses_raw_frames_separate_vocabulary_and_closes_resources(monkeypatch, exit_key, expected):
     import torch
     import ultralytics
     from tools import live_detect
@@ -177,11 +178,11 @@ def test_live_loop_uses_raw_frames_separate_vocabulary_and_closes_resources(monk
     monkeypatch.setattr(live_detect, "StreamWatchdog", Watchdog)
     for method in ("namedWindow", "setMouseCallback", "resizeWindow", "imshow", "destroyAllWindows"):
         monkeypatch.setattr(live_detect.cv2, method, lambda *args, **kwargs: None)
-    keys = iter((-1, -1, -1, ord("q")))
+    keys = iter((-1, -1, -1, exit_key))
     monkeypatch.setattr(live_detect.cv2, "waitKey", lambda _: next(keys))
     monkeypatch.setattr(live_detect.cv2, "getWindowProperty", lambda *args: 1)
     monkeypatch.setenv("HIK_PASS", "local-test-only")
-    assert live_detect.main(["--ip", "192.168.1.64", "--brand", "hikvision", "--windowed", "--traffic"]) == 0
+    assert live_detect.main(["--ip", "192.168.1.64", "--brand", "hikvision", "--windowed", "--traffic"]) == expected
     assert len(models) == 2
     assert models[0].prompts == [c[0] for c in CLASSES]
     assert models[1].prompts == list(VEHICLE_PROMPTS)

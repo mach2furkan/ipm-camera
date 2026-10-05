@@ -95,7 +95,7 @@ class LabelPainter:
         frame[y:y + h, x:x + w] = p[:h, :w]
 
 
-def main(argv=None) -> int:
+def main(argv=None, connection_defaults=None) -> int:
     ap = argparse.ArgumentParser(description="Live object detection, full screen")
     ap.add_argument("--ip", default=os.environ.get("HIK_IP", "192.168.1.64"))
     ap.add_argument("--user", default=os.environ.get("HIK_USER", "admin"))
@@ -125,15 +125,23 @@ def main(argv=None) -> int:
     brands = dict(auto="Otomatik", dahua="Dahua", hikvision="Hikvision", onvif="ONVIF", custom="Özel RTSP")
     if args.setup:
         from tools.camera_setup import ask_camera
-        selection = ask_camera(host=args.ip, username=args.user, stream=args.stream,
-                               port=args.rtsp_port, channel=args.channel, path=args.rtsp_path,
-                               traffic=args.traffic, brand=brands[args.brand], onvif_port=args.onvif_port,
-                               compatible=args.software_decode)
+        defaults = dict(host=args.ip, username=args.user, stream=args.stream,
+                        port=args.rtsp_port, channel=args.channel, path=args.rtsp_path,
+                        traffic=args.traffic, brand=brands[args.brand], onvif_port=args.onvif_port,
+                        compatible=args.software_decode)
+        if connection_defaults:
+            defaults.update(connection_defaults)
+        selection = ask_camera(**defaults)
         if selection is None:
             return 64
         cam = selection.camera
         args.stream, args.traffic = selection.stream, selection.traffic
         args.software_decode = selection.compatible
+        if connection_defaults is not None:
+            connection_defaults.update(host=cam.host, username=cam.username, stream=args.stream,
+                port=cam.rtsp_port, channel=cam.channel, brand=selection.brand,
+                path=selection.custom_path, traffic=args.traffic, onvif_port=selection.onvif_port,
+                compatible=args.software_decode)
     elif not password:
         import tkinter as tk
         from tkinter import simpledialog
@@ -230,14 +238,27 @@ def main(argv=None) -> int:
         class_map = tuple(range(len(NAMES)))
     generation = reader.generation
     waiting_painter = LabelPainter(16)
+    from tools.ptz_panel import PTZPanel
+    ptz_panel = PTZPanel(cam)
+    ptz_was_moving = False
+    ptz_motion_token = None
     inference = ResponsiveInference()
     pending_keys = deque(maxlen=32)
     last_hud_time = -float("inf")
     hud = ""
     last_preview = None
     last_preview_at = 0.
+    reconfigure = False
     def pump_controls():
+        nonlocal reconfigure
+        ptz_panel.pump()
         key = cv2.waitKey(1) & 0xFF
+        if key == ord("p"):
+            ptz_panel.show()
+            return True
+        if key == ord("c"):
+            reconfigure = True
+            return False
         if key in (27, ord("q")) or cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
             return False
         if key != 255:
@@ -272,11 +293,9 @@ def main(argv=None) -> int:
                 if status.last_failure is not None:
                     waiting_painter.put(blank, f"Bağlantı sorunu: {status.last_failure.value}. IP, şifre ve RTSP yolunu kontrol et.",
                                         30, 355, (24, 24, 24))
-                waiting_painter.put(blank, "Otomatik yeniden bağlantı açık. Q/Esc: çıkış", 30, 395, (24, 24, 24))
+                waiting_painter.put(blank, "C: bağlantı | P: PTZ / zoom | Q/Esc: çıkış", 30, 395, (24, 24, 24))
                 cv2.imshow(win, blank)
-                if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
-                    break
-                if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
+                if not pump_controls():
                     break
                 continue
             seq = res.seq
@@ -329,7 +348,17 @@ def main(argv=None) -> int:
                 vb = traffic_pred.boxes
                 vd = vehicle_detections(*box_arrays(vb), W, H)
                 traffic_out = traffic_tracker.update(vd, res.frame.arrival_ns / 1e9)
-                traffic_overlay.update(traffic_out, res.frame.arrival_ns / 1e9, H, W)
+                moving = ptz_panel.moving
+                token = ptz_panel.motion_token
+                motion_changed = token != ptz_motion_token
+                ptz_motion_token = token
+                if moving or ptz_was_moving or motion_changed:
+                    if traffic_overlay.counter is not None:
+                        traffic_overlay.counter.reset_tracks()
+                ptz_was_moving = moving
+                # Camera motion must not be counted as a vehicle crossing.
+                traffic_overlay.update(traffic_out, res.frame.arrival_ns / 1e9, H, W,
+                                       count=not moving and not motion_changed)
 
             counts: dict[str, int] = {}
             thick = max(2, H // 400)
@@ -361,7 +390,10 @@ def main(argv=None) -> int:
                     painter.put(frame, f"{VEHICLE_LABELS[tr.cls]} T#{tr.track_id} {tr.conf:.2f}",
                                 x1, y1, (32, 80, 80))
                 traffic_overlay.draw(frame, hud_painter)
+            hud_painter.put(frame, "P: PTZ / zoom | C: bağlantı | F: tam ekran | S: fotoğraf | Q/Esc: çıkış",
+                            0, H-32, (24, 24, 24))
             cv2.imshow(win, frame)
+            ptz_panel.pump()
             last_preview = frame
             last_preview_at = time.perf_counter()
             if fullscreen and not applied_fs:   # must be set after the first imshow to take effect
@@ -392,15 +424,27 @@ def main(argv=None) -> int:
             elif key == ord("r") and traffic_overlay is not None:
                 if traffic_overlay.counter is not None:
                     traffic_overlay.counter.reset_counts()
+            elif key == ord("c"):
+                reconfigure = True
+                break
+            elif key == ord("p"):
+                ptz_panel.show()
             if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
                 break
     except (KeyboardInterrupt, InferenceCancelled):
         pass
     finally:
-        inference.close()
-        watchdog.stop()
-        cv2.destroyAllWindows()
-    return 0
+        try:
+            inference.close()
+        finally:
+            try:
+                watchdog.stop()
+            finally:
+                try:
+                    ptz_panel.close()
+                finally:
+                    cv2.destroyAllWindows()
+    return 75 if reconfigure else 0
 
 
 if __name__ == "__main__":

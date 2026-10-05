@@ -18,6 +18,7 @@ class CameraSelection:
     brand: str = "Hikvision"
     onvif_port: int = 80
     compatible: bool = False
+    custom_path: str = ""
 
 
 def selection_from_fields(host: str, username: str, password: str, port: str,
@@ -53,12 +54,13 @@ def selection_from_fields(host: str, username: str, password: str, port: str,
         raise ValueError("Geçersiz yayın seçimi.")
     if brand not in BRANDS:
         raise ValueError("Geçersiz kamera markası.")
+    custom_path = path
     if not path and brand == "Dahua":
         path = common_paths(brand, channel_n, stream)[0]
     if not path and brand == "Özel RTSP":
         raise ValueError("Kameranın özel RTSP yayın yolunu girin.")
     return CameraSelection(CameraConfig(host, username.strip(), password,
-        channel=channel_n, rtsp_port=port_n, rtsp_path=path or None), stream, traffic, brand, onvif_n, compatible)
+        channel=channel_n, rtsp_port=port_n, rtsp_path=path or None), stream, traffic, brand, onvif_n, compatible, custom_path)
 
 
 class ConnectionForm:
@@ -111,6 +113,13 @@ class ConnectionForm:
         self.status = tk.StringVar(value="Bağlanmadan önce görüntü kontrol edilir.")
         ttk.Label(panel, textvariable=self.status, wraplength=460).grid(row=13, column=0, columnspan=2, sticky="w", pady=8)
         self.busy = False
+        import threading
+        self.cancelled = threading.Event()
+        def cancel():
+            self.cancelled.set()
+            self.fields["password"].set("")
+            root.destroy()
+        root.protocol("WM_DELETE_WINDOW", cancel)
         def connect():
             if self.busy:
                 return
@@ -124,18 +133,24 @@ class ConnectionForm:
             import queue
             import threading
             outcomes = queue.Queue()
+            updates = queue.Queue()
             self.busy = True
             self.button.configure(state="disabled")
             self.status.set("Kamera yayını aranıyor ve görüntü doğrulanıyor…")
             def check():
                 try:
-                    camera = resolve_camera(selection.camera, selection.stream, selection.brand, selection.onvif_port)
+                    camera = resolve_camera(selection.camera, selection.stream, selection.brand, selection.onvif_port,
+                                            progress=updates.put, cancelled=self.cancelled)
                     outcomes.put((replace(selection, camera=camera), None))
                 except Exception as exc:
                     from ipcam.stream.connect import ConnectionCheckError
                     outcomes.put((None, str(exc) if isinstance(exc, ConnectionCheckError)
                                   else "Bağlantı kontrolü tamamlanamadı. Kamera ayarlarını kontrol edin."))
             def poll():
+                if self.cancelled.is_set():
+                    return
+                while not updates.empty():
+                    self.status.set(updates.get_nowait())
                 try:
                     result, error = outcomes.get_nowait()
                 except queue.Empty:
@@ -153,8 +168,9 @@ class ConnectionForm:
             root.after(100, poll)
         self.button = ttk.Button(panel, text="Bağlantıyı kontrol et ve başlat", command=connect)
         self.button.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        ttk.Button(panel, text="İptal / kapat", command=cancel).grid(row=15, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         root.bind("<Return>", lambda _: connect())
-        root.bind("<Escape>", lambda _: root.destroy())
+        root.bind("<Escape>", lambda _: cancel())
 
 
 def ask_camera(**defaults) -> CameraSelection | None:

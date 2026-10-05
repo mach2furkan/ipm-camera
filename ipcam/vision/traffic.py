@@ -68,6 +68,7 @@ class TrafficOverlay:
         self.points = None
         self.counter = None
         self.shape = None
+        self.paused = False
 
     def click(self, event, x, y, flags, param):
         import cv2
@@ -84,7 +85,8 @@ class TrafficOverlay:
             else:
                 self.points.clear()
 
-    def update(self, output, t, height, width):
+    def update(self, output, t, height, width, *, count=True):
+        self.paused = not count
         if self.counter is None or self.shape != (height, width):
             a, b = [tuple(int(v*s) for v, s in zip(p, (width, height))) for p in self.line]
             totals = self.counter.counts.copy() if self.counter is not None else None
@@ -92,7 +94,7 @@ class TrafficOverlay:
             if totals is not None:
                 self.counter.counts[:] = totals
             self.shape = (height, width)
-        if self.points is None:
+        if count and self.points is None:
             self.counter.update(output.tracks, output.removed_ids, t)
 
     def draw(self, frame, painter):
@@ -111,5 +113,7 @@ class TrafficOverlay:
         else:
             text = "Trafik A / B: " + " | ".join(
                 f"{name} {int(row[0])}/{int(row[1])}" for name, row in zip(VEHICLE_LABELS, c.counts))
+            if self.paused:
+                text += " | PTZ hareketi: sayım bekliyor"
         painter.put(frame, text, 0, 38, (32, 48, 48))
         painter.put(frame, "L: çizgi seç   R: sayacı sıfırla | A/B: işaretli tarafa doğru geçiş", 0, 76, (32, 48, 48))
