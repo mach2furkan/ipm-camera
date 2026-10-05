@@ -114,7 +114,8 @@ def main(argv=None, connection_defaults=None) -> int:
     ap.add_argument("--model", default="yolov8m-worldv2.pt")
     ap.add_argument("--closed-model", action="store_true", help="fixed ten-class trained .pt or .engine")
     ap.add_argument("--imgsz", type=int, default=1280)
-    ap.add_argument('--square-inference', action='store_true', help='Use full square padding instead of efficient rectangular inference')
+    ap.add_argument('--square-inference', action='store_true', default=True, help='Use the original square inference padding (default)')
+    ap.add_argument('--rectangular-inference', action='store_false', dest='square_inference', help='Opt in to rectangular inference padding')
     ap.add_argument("--conf-scale", type=float, default=1.0, help="multiplies every per-class threshold")
     ap.add_argument("--windowed", action="store_true")
     ap.add_argument("--max-age-ms", type=float, default=250, help="Reject frames older than this before inference")
@@ -303,7 +304,11 @@ def main(argv=None, connection_defaults=None) -> int:
         nonlocal reconfigure
         ptz_panel.pump()
         if live_preview.poll(reader):
-            show_dashboard(live_preview.image, live_preview.image is not None)
+            # Keep the last matched detection visible while the next frame runs.
+            # Fall back to live video if that result is stale or the stream restarted.
+            if (last_preview is None or reader.generation != generation
+                    or time.perf_counter()-last_preview_at >= .5):
+                show_dashboard(live_preview.image, live_preview.image is not None)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("p"):
             ptz_panel.show()
@@ -454,15 +459,11 @@ def main(argv=None, connection_defaults=None) -> int:
                 traffic_overlay.draw(frame, hud_painter)
             hud_painter.put(frame, "P: PTZ / zoom | C: bağlantı | F: tam ekran | S: fotoğraf | Q/Esc: çıkış",
                             0, H-32, (24, 24, 24))
-            # Never rewind live video to an older analyzed frame or put its boxes
-            # on a different frame. Report analysis in the dashboard instead.
-            if live_preview.seq > res.seq or live_preview.image is None:
-                show_dashboard(live_preview.image, live_preview.image is not None)
-            else:
-                show_dashboard(frame)
+            # Display every completed result on the exact frame it analyzed.
+            show_dashboard(frame)
             ptz_panel.pump()
-            last_preview = live_preview.image if live_preview.seq > res.seq or live_preview.image is None else frame
-            last_preview_at = live_preview.received_at
+            last_preview = frame
+            last_preview_at = time.perf_counter()
             if fullscreen and not applied_fs:   # must be set after the first imshow to take effect
                 cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                 applied_fs = True
