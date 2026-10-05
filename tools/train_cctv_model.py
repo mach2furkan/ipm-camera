@@ -21,6 +21,16 @@ from tools.label_editor import atomic_json, dataset_lock
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# Preserve matching COCO classification rows despite the Turkish display taxonomy.
+# COCO 'tv' and our 'monitor' are not equivalent, so they are not mapped.
+PRETRAINED_ALIASES = dict(person='insan', book='kitap', laptop='dizustu_bilgisayar',
+                         keyboard='klavye', mouse='fare', **{'cell phone': 'telefon'},
+                         cup='bardak', bottle='sise')
+
+
+def transfer_names(names):
+    return {key: PRETRAINED_ALIASES.get(value, value) for key, value in names.items()}
+
 
 def sha(path):
     with Path(path).open('rb') as handle:
@@ -48,10 +58,14 @@ def main():
     parser.add_argument('--allow-unreviewed-candidate', action='store_true')
     parser.add_argument('--epochs', type=int)
     parser.add_argument('--batch', type=int, default=4)
+    parser.add_argument('--name', default='yolo11m_cctv_run')
+    parser.add_argument('--transfer-class-aliases', action='store_true')
     args = parser.parse_args()
     if args.batch < 1 or (args.epochs is not None and args.epochs < 1):
         parser.error('Epochs and batch must be positive')
-    folder = ROOT / 'cctv_desk_project/yolo11m_cctv_run'
+    if not args.name or args.name in ('.', '..') or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in args.name):
+        parser.error('Run name must contain only letters, digits, underscores or hyphens')
+    folder = ROOT / 'cctv_desk_project' / args.name
     if folder.exists():
         parser.error('Output directory already exists; existing training artifacts will not be overwritten')
     source = yaml.safe_load(args.data.read_text(encoding='utf-8'))
@@ -71,7 +85,7 @@ def main():
     unsupported = set(config)-set(DEFAULT_CFG_DICT)
     if unsupported:
         raise ValueError(f'Unsupported training options: {sorted(unsupported)}')
-    state = ROOT / 'cctv_desk_project/yolo11m_cctv_training_status.json'
+    state = ROOT / 'cctv_desk_project' / f'{args.name}_training_status.json'
     state.parent.mkdir(parents=True, exist_ok=True)
     atomic_json(state, dict(stage='validating_dataset', training_started=False, pid=os.getpid()))
     # Hold the same lock used by the label editor, so source labels stay stable.
@@ -122,6 +136,10 @@ def main():
         config['amp'] = True
         started = time.monotonic()
         model = YOLO(str(weights), task='detect')
+        if args.transfer_class_aliases:
+            model.model.names = transfer_names(model.model.names)
+            report['pretrained_class_aliases'] = PRETRAINED_ALIASES
+            atomic_json(report_path, report)
         def progress(trainer):
             data = dict(stage='training', training_started=True, pid=os.getpid(),
                         epoch=trainer.epoch+1, epochs=trainer.epochs,
