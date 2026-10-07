@@ -79,6 +79,35 @@ def selection_from_fields(host: str, username: str, password: str, port: str,
         thermal_n, thermal_path.strip())
 
 
+def apply_corporate_style(root):
+    """White corporate ttk theme shared by the connection form and the PTZ window."""
+    from tkinter import ttk
+    style = ttk.Style(root)
+    if "clam" in style.theme_names():
+        style.theme_use("clam")
+    white, text, muted, navy, blue, border = "#FFFFFF", "#1F2937", "#64728A", "#0B3A75", "#1563C4", "#DADEE2"
+    root.configure(background=white)
+    style.configure(".", background=white, foreground=text, font=("Segoe UI", 10),
+                    bordercolor=border, lightcolor=white, darkcolor=border)
+    style.configure("TFrame", background=white)
+    style.configure("TLabel", background=white, foreground=text)
+    style.configure("Title.TLabel", foreground=navy, font=("Segoe UI", 18, "bold"))
+    style.configure("Muted.TLabel", foreground=muted)
+    style.configure("TCheckbutton", background=white)
+    style.map("TCheckbutton", background=[("active", white)])
+    style.configure("TEntry", fieldbackground=white, padding=5)
+    style.configure("TCombobox", fieldbackground=white, padding=4)
+    style.map("TCombobox", fieldbackground=[("readonly", white)])
+    style.configure("TButton", background=white, foreground=navy, padding=(12, 7))
+    style.map("TButton", background=[("active", "#EEF3FA")])
+    style.configure("Accent.TButton", background=blue, foreground=white, bordercolor=blue,
+                    font=("Segoe UI", 10, "bold"))
+    style.map("Accent.TButton", background=[("disabled", "#9DB7DD"), ("active", navy)])
+    style.configure("Danger.TButton", background="#C83434", foreground=white, bordercolor="#C83434",
+                    font=("Segoe UI", 10, "bold"))
+    style.map("Danger.TButton", background=[("active", "#A12626")])
+
+
 class ConnectionForm:
     def __init__(self, root, *, host="192.168.1.64", username="admin", stream="main",
                  port=554, channel=1, path="", traffic=False, brand="Otomatik", onvif_port=80, compatible=False,
@@ -89,9 +118,11 @@ class ConnectionForm:
         self.root = root
         root.title("IP Kamera • Bağlantı ve algılama")
         root.resizable(False, False)
-        panel = ttk.Frame(root, padding=24)
+        apply_corporate_style(root)
+        tk.Frame(root, background="#0B3A75", height=6).grid(sticky="ew")
+        panel = ttk.Frame(root, padding=28)
         panel.grid()
-        ttk.Label(panel, text="Kamerana bağlan", font=("Segoe UI", 18, "bold")).grid(
+        ttk.Label(panel, text="Kamerana bağlan", style="Title.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 16))
         self.fields = {}
         entries = [("host", "Kamera IP / ağ adı", host), ("username", "Kullanıcı adı", username),
@@ -126,7 +157,7 @@ class ConnectionForm:
                   "Otomatik: Dahua/Hikvision yolları, ardından ONVIF yayını aranır.\n"
                   "Özel yayın yolu girilirse marka yolunun yerine kullanılır.\n"
                   "Şifre kaydedilmez. Termal kanal boşsa yalnız ana görüntü açılır.",
-                  foreground="#555555").grid(row=12, column=0, columnspan=2, sticky="w", pady=8)
+                  style="Muted.TLabel").grid(row=12, column=0, columnspan=2, sticky="w", pady=8)
         self.status = tk.StringVar(value="Bağlanmadan önce görüntü kontrol edilir.")
         ttk.Label(panel, textvariable=self.status, wraplength=460).grid(row=13, column=0, columnspan=2, sticky="w", pady=8)
         self.busy = False
@@ -183,7 +214,8 @@ class ConnectionForm:
                 root.destroy()
             threading.Thread(target=check, name="camera-connect", daemon=True).start()
             root.after(100, poll)
-        self.button = ttk.Button(panel, text="Bağlantıyı kontrol et ve başlat", command=connect)
+        self.button = ttk.Button(panel, text="Bağlantıyı kontrol et ve başlat", command=connect,
+                                 style="Accent.TButton")
         self.button.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(panel, text="İptal / kapat", command=cancel).grid(row=15, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         for widget in panel.grid_slaves():

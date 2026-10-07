@@ -64,9 +64,12 @@ class PTZPanel:
         root.title("Kamera • PTZ kontrol")
         root.attributes("-topmost", True)
         root.resizable(False, False)
-        box = ttk.Frame(root, padding=18)
+        from tools.camera_setup import apply_corporate_style
+        apply_corporate_style(root)
+        tk.Frame(root, background="#0B3A75", height=6).grid(sticky="ew")
+        box = ttk.Frame(root, padding=22)
         box.grid()
-        ttk.Label(box, text="PTZ ve optik yakınlaştırma", font=("Segoe UI", 12, "bold")).grid(
+        ttk.Label(box, text="PTZ ve optik yakınlaştırma", style="Title.TLabel", font=("Segoe UI", 13, "bold")).grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
         initial_protocol = "Dahua" if (self.camera.rtsp_path or "").startswith("/cam/realmonitor") else "ISAPI"
         protocol = tk.StringVar(value=initial_protocol)
@@ -114,7 +117,7 @@ class PTZPanel:
             ("Sağ", "right", 6, 2), ("Aşağı", "down", 7, 1),
             ("Yakınlaştır +", "zoom_in", 8, 0), ("Uzaklaştır −", "zoom_out", 8, 2)]:
             ttk.Button(box, text=title, command=lambda d=direction: move(d)).grid(row=row, column=col, padx=4, pady=4, sticky="ew")
-        ttk.Button(box, text="DUR", command=stop).grid(row=6, column=1, sticky="ew", padx=4)
+        ttk.Button(box, text="DUR", command=stop, style="Danger.TButton").grid(row=6, column=1, sticky="ew", padx=4)
         ttk.Label(box, textvariable=status, wraplength=350).grid(row=9, column=0, columnspan=3, sticky="w", pady=10)
         ttk.Label(box, text="Kamera PTZ/optik zoom donanımı ve kontrol yetkisi gerekli.", wraplength=350).grid(
             row=10, column=0, columnspan=3, sticky="w")

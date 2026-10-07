@@ -65,8 +65,9 @@ class LabelPainter:
             self.font = ImageFont.load_default()
         self._cache = OrderedDict()
 
-    def patch(self, text: str, bg: tuple[int, int, int]) -> np.ndarray:
-        key = (text, bg)
+    def patch(self, text: str, bg: tuple[int, int, int],
+              fg: tuple[int, int, int] | None = None) -> np.ndarray:
+        key = (text, bg, fg)
         p = self._cache.get(key)
         if p is not None:
             self._cache.move_to_end(key)
@@ -77,16 +78,17 @@ class LabelPainter:
             pad = max(4, (y1 - y0) // 4)
             img = Image.new("RGB", (x1 - x0 + 2 * pad, y1 - y0 + 2 * pad), bg[::-1])
             lum = 0.299 * bg[2] + 0.587 * bg[1] + 0.114 * bg[0]
-            ImageDraw.Draw(img).text((pad - x0, pad - y0), text, font=self.font,
-                                     fill=(20, 20, 20) if lum > 140 else (245, 245, 245))
+            fill = fg[::-1] if fg is not None else (20, 20, 20) if lum > 140 else (245, 245, 245)
+            ImageDraw.Draw(img).text((pad - x0, pad - y0), text, font=self.font, fill=fill)
             p = np.asarray(img)[:, :, ::-1].copy()
             self._cache[key] = p
             if len(self._cache) > 512:
                 self._cache.popitem(last=False)
         return p
 
-    def put(self, frame: np.ndarray, text: str, x: int, y: int, bg: tuple[int, int, int]) -> None:
-        p = self.patch(text, bg)
+    def put(self, frame: np.ndarray, text: str, x: int, y: int, bg: tuple[int, int, int],
+            fg: tuple[int, int, int] | None = None) -> None:
+        p = self.patch(text, bg, fg)
         h, w = p.shape[:2]
         H, W = frame.shape[:2]
         x = max(0, min(W - w, x))
@@ -347,16 +349,18 @@ def main(argv=None, connection_defaults=None) -> int:
                     if not pump_controls():
                         break
                     continue
-                blank = np.zeros((540, 960, 3), np.uint8)
+                from tools.camera_dashboard import MUTED, NAVY, TEXT, VIDEO_BG
+                blank = np.empty((540, 960, 3), np.uint8)
+                blank[:] = VIDEO_BG
                 last_preview = None
-                cv2.putText(blank, "goruntu bekleniyor...", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (180, 180, 180), 2)
+                waiting_painter.put(blank, "Görüntü bekleniyor…", 30, 265, VIDEO_BG, NAVY)
                 status = watchdog.stats()
                 waiting_painter.put(blank, f"Kamera: {cam.host}:{cam.rtsp_port} | {status.state.value}",
-                                    30, 315, (24, 24, 24))
+                                    30, 315, VIDEO_BG, TEXT)
                 if status.last_failure is not None:
                     waiting_painter.put(blank, f"Bağlantı sorunu: {status.last_failure.value}. IP, şifre ve RTSP yolunu kontrol et.",
-                                        30, 355, (24, 24, 24))
-                waiting_painter.put(blank, "C: bağlantı | P: PTZ / zoom | Q/Esc: çıkış", 30, 395, (24, 24, 24))
+                                        30, 355, VIDEO_BG, TEXT)
+                waiting_painter.put(blank, "C: bağlantı | P: PTZ / zoom | Q/Esc: çıkış", 30, 395, VIDEO_BG, MUTED)
                 show_dashboard(blank, False)
                 if not pump_controls():
                     break
@@ -449,7 +453,7 @@ def main(argv=None, connection_defaults=None) -> int:
                        f"gecikme {lat_ms.summary().p50:4.0f} ms   eşik x{scale:.2f}   |   {summary}")
                 last_hud_time = now
             dashboard.analysis_text = f'Analiz: {fps.rate():.1f} fps • {infer_ms.summary().p50:.0f} ms • {summary}'
-            hud_painter.put(frame, hud, 0, 0, (24, 24, 24))
+            hud_painter.put(frame, hud, 0, 0, (255, 255, 255), (117, 58, 11))
             if traffic_out is not None:
                 for tr in traffic_out.tracks:
                     x1, y1, x2, y2 = (int(v) for v in tr.box)
@@ -458,7 +462,7 @@ def main(argv=None, connection_defaults=None) -> int:
                                 x1, y1, (32, 80, 80))
                 traffic_overlay.draw(frame, hud_painter)
             hud_painter.put(frame, "P: PTZ / zoom | C: bağlantı | F: tam ekran | S: fotoğraf | Q/Esc: çıkış",
-                            0, H-32, (24, 24, 24))
+                            0, H-32, (255, 255, 255), (117, 58, 11))
             # Display every completed result on the exact frame it analyzed.
             show_dashboard(frame)
             ptz_panel.pump()
