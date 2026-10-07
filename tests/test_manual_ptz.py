@@ -123,3 +123,49 @@ def test_stop_after_completed_or_failed_move_sends_only_stop(monkeypatch):
     finally:
         controller.close()
     assert calls == ["move", "stop-only"]
+
+@pytest.mark.parametrize('protocol,channel', [('ISAPI', 1), ('Dahua', 0)])
+def test_controller_reuses_connection_and_loop_and_closes_once(monkeypatch, protocol, channel):
+    calls, loops = [], []
+    class Client:
+        async def __aenter__(self):
+            calls.append('open')
+            return self
+        async def __aexit__(self, *args):
+            calls.append('close')
+        async def ptz_continuous(self, *speeds, channel):
+            loops.append(asyncio.get_running_loop())
+            calls.append('move' if any(speeds) else 'stop')
+        async def get(self, path, params):
+            loops.append(asyncio.get_running_loop())
+            calls.append('move' if params['action'] == 'start' else 'stop')
+            return SimpleNamespace(text='OK', raise_for_status=lambda: None)
+    if protocol == 'ISAPI':
+        monkeypatch.setattr(ptz.HikvisionISAPIClient, 'from_config', lambda *a, **kw: Client())
+    else:
+        monkeypatch.setattr(ptz.httpx, 'AsyncClient', lambda **kw: Client())
+    controller = ptz.ManualPTZ(CameraConfig('camera', 'admin', 'secret'), protocol, channel)
+    try:
+        for direction in ('left', 'right'):
+            assert controller.pulse(direction, duration=.05)
+            controller.future.result(timeout=2)
+        controller.stop()
+        controller.future.result(timeout=2)
+    finally:
+        controller.close()
+        controller.close()
+    assert calls == ['open', 'move', 'stop', 'move', 'stop', 'stop', 'close']
+    assert len(set(loops)) == 1
+    assert loops[0].is_closed()
+
+@pytest.mark.parametrize('direction,speed,duration', [('invalid', 30, .25), ('left', 0, .25), ('left', 30, 2)])
+def test_invalid_move_is_rejected_before_connection(direction, speed, duration):
+    controller = ptz.ManualPTZ(CameraConfig('camera', 'admin', 'secret'))
+    try:
+        with pytest.raises(ValueError):
+            controller.pulse(direction, speed, duration)
+        assert controller.future is None
+        assert controller.motion_serial == 0
+        assert controller._loop is None
+    finally:
+        controller.close()

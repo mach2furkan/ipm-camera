@@ -308,7 +308,7 @@ def main(argv=None, connection_defaults=None) -> int:
         if live_preview.poll(reader):
             # Keep the last matched detection visible while the next frame runs.
             # Fall back to live video if that result is stale or the stream restarted.
-            if (last_preview is None or reader.generation != generation
+            if (ptz_panel.moving or last_preview is None or reader.generation != generation
                     or time.perf_counter()-last_preview_at >= .5):
                 show_dashboard(live_preview.image, live_preview.image is not None)
         key = cv2.waitKey(1) & 0xFF
