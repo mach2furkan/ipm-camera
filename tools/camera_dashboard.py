@@ -21,7 +21,7 @@ class CameraDashboard:
         self.panel, self.painter, self.host = panel, painter, host
         self.thermal_channel, self.optical_channel = thermal_channel, optical_channel
         self.traffic = traffic
-        self.mode = 'dual' if thermal_channel else 'optical'
+        self.mode = 'dual'
         self.buttons = []
         self.optical_mapping = None
         self.status = 'Hazır • Hareket için yön düğmesine tıklayın'
@@ -91,21 +91,21 @@ class CameraDashboard:
         self.buttons = []
         self.painter.put(canvas, 'CAMERA / OPERATÖR MERKEZİ', 28, 16, CARD, NAVY)
         self.painter.put(canvas, f'{self.host} • Bağımsız kanal bağlantıları', 28, 48, CARD, MUTED)
-        modes = [('Optik', 'optical')]
+        modes = [('\u00c7ift g\u00f6r\u00fcnt\u00fc', 'dual'), ('Optik', 'optical')]
         if self.thermal_channel:
-            modes += [('Çift görüntü', 'dual'), ('Termal', 'thermal')]
+            modes.append(('Termal', 'thermal'))
         for i, (label, mode) in enumerate(modes):
             self.button(canvas, label, (760+i*170, 20, 160, 46), lambda m=mode: setattr(self, 'mode', m), self.mode == mode)
         self.optical_mapping = None
         if self.mode == 'dual':
             self.optical_mapping = self.tile(canvas, optical, (24, 100, 650, 690),
                 f'OPTİK • Kanal {self.optical_channel}', optical_live)
-            self.tile(canvas, thermal, (690, 100, 650, 690), f'TERMAL • Kanal {self.thermal_channel}', thermal_live)
+            self.tile(canvas, thermal, (690, 100, 650, 690), (f'TERMAL \u2022 Kanal {self.thermal_channel}' if self.thermal_channel else 'TERMAL \u2022 Kanal se\u00e7in (C)'), thermal_live)
         elif self.mode == 'optical':
             self.optical_mapping = self.tile(canvas, optical, (24, 100, 1316, 690),
                 f'OPTİK • Kanal {self.optical_channel}', optical_live)
         else:
-            self.tile(canvas, thermal, (24, 100, 1316, 690), f'TERMAL • Kanal {self.thermal_channel}', thermal_live)
+            self.tile(canvas, thermal, (24, 100, 1316, 690), (f'TERMAL \u2022 Kanal {self.thermal_channel}' if self.thermal_channel else 'TERMAL \u2022 Kanal se\u00e7in (C)'), thermal_live)
         self.painter.put(canvas, 'PTZ KONTROL', 1366, 116, CARD, NAVY)
         cv2.line(canvas, (1366, 148), (1570, 148), BORDER, 1)
         for label, direction, x, y in [('↑', 'up', 1430, 170), ('←', 'left', 1360, 230),
